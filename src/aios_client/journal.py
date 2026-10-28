@@ -22,6 +22,7 @@ class Journal:
             CREATE TABLE IF NOT EXISTS events(id INTEGER PRIMARY KEY, run TEXT, kind TEXT, body TEXT, time REAL);
             CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, run TEXT, path TEXT, body TEXT);
             CREATE TABLE IF NOT EXISTS claims(run TEXT PRIMARY KEY, body TEXT, cursor INTEGER DEFAULT 0);
+            CREATE TABLE IF NOT EXISTS session_state(run TEXT PRIMARY KEY, body TEXT, updated REAL);
         """)
         self.db.commit()
 
@@ -167,6 +168,20 @@ class Journal:
                     )
             self.db.execute("UPDATE claims SET cursor=? WHERE run=?", (cursor, run))
 
+    def save_state(self, run, body):
+        with self.lock, self.db:
+            self.db.execute(
+                "INSERT INTO session_state VALUES(?,?,?) ON CONFLICT(run) DO UPDATE SET body=excluded.body,updated=excluded.updated",
+                (run, json.dumps(body), time.time()),
+            )
+
+    def state(self, run):
+        with self.lock:
+            row = self.db.execute(
+                "SELECT body FROM session_state WHERE run=?", (run,)
+            ).fetchone()
+            return json.loads(row[0]) if row else None
+
     def status(self, agent=None):
         with self.lock:
             sql = "SELECT id,agent,status,task,result FROM runs"
@@ -177,12 +192,26 @@ class Journal:
             rows = self.db.execute(
                 sql + " ORDER BY updated DESC LIMIT 30", args
             ).fetchall()
-            return [
-                dict(
-                    id=r[0], agent=r[1], status=r[2], task=r[3], result=json.loads(r[4])
+            result = []
+            for row in rows:
+                item = dict(
+                    id=row[0],
+                    agent=row[1],
+                    status=row[2],
+                    task=row[3],
+                    result=json.loads(row[4]),
                 )
-                for r in rows
-            ]
+                state = self.state(row[0])
+                if state:
+                    item["session"] = {
+                        "plan": state.get("plan", []),
+                        "blocked_reason": state.get("blocked_reason"),
+                        "compacted_exchanges": state.get("context", {}).get(
+                            "compacted_exchanges", 0
+                        ),
+                    }
+                result.append(item)
+            return result
 
     def events(self, run):
         with self.lock:

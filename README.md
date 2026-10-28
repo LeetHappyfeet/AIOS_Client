@@ -85,6 +85,16 @@ Ctrl+C stops work. A separate stop command writes a stop request checked every s
 while a run is active. An in-flight model HTTP request may take up to its configured
 timeout to return; owned commands are terminated when cancellation is observed.
 
+## Coding runtime
+
+The client owns a native model/tool session with a strict shared tool registry,
+local plans, repository `AGENTS.md` guidance, bounded working-context compaction,
+and durable checkpoints. It now supports batch file edits, file moves/deletion,
+argument-array commands, explicit shell selection, queued stdin/EOF, artifact reads,
+and richer Git inspection. The existing v2/v3 assignment and verification contracts
+remain in place. See [coding runtime and the next system-work pass](docs/coding-runtime.md)
+for tool inputs, recovery limits, and the Windows/Linux terminal adapter roadmap.
+
 ## Coding behavior and records
 
 V3 adds `aios_recall(query)` for permitted character recall during execution and
@@ -100,7 +110,9 @@ No commits, pushes or deployments are made by the client automatically.
 Default budgets are 60 model turns, 1,800 seconds, and 100,000 serialized context
 characters. Structured assignments can set these limits; HTTP calls remain subject to
 transport timeouts, and cancellation is cooperative rather than a hard VM deadline.
-Exhaustion stops the run with its journal intact; it does not silently discard earlier
+Completed tool exchanges are compacted into retained receipts when context fills.
+Pinned assignment/guidance and retained errors are preserved. If that state cannot fit,
+exhaustion stops the run with its journal intact; it does not silently discard earlier
 instructions. Small models must actually support native tool calls. Prose pretending
 to call a tool is rejected by the compatibility probe, not executed.
 
