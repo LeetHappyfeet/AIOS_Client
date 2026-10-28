@@ -41,10 +41,11 @@ class Model(API):
     def models(self):
         return [x["id"] for x in self.request("GET", "models").get("data", [])]
 
-    def completion(self, model, messages, tools):
+    def completion(self, model, messages, tools, timeout=None):
         d = self.request(
             "POST",
             "chat/completions",
+            **({"timeout": timeout} if timeout is not None else {}),
             json={
                 "model": model,
                 "messages": messages,

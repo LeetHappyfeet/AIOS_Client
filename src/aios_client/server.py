@@ -7,6 +7,7 @@ from pathlib import Path
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 
+from .assignment import assignment
 from .config import ConfigStore, aios_url
 from .http import API, Model
 from .journal import Journal
@@ -145,8 +146,8 @@ def create_app(store: ConfigStore, port=8765):
         api = API(aios_url(p), store.secrets.get(p.get("secret_ref", "")))
         try:
             result = api.request("GET", "workspace-client/protocol")
-            if result.get("version") != 1:
-                raise ValueError("AIOS workspace protocol v1 required")
+            if result.get("version") != 2:
+                raise ValueError("AIOS workspace protocol v2 required")
             return {"ok": True, "url": aios_url(p), "protocol": result}
         finally:
             api.close()
@@ -211,11 +212,13 @@ def create_app(store: ConfigStore, port=8765):
 
     @app.post("/api/start")
     def start(data: dict):
-        task = data.get("task", "").strip()
-        if not task and not data.get("serve"):
-            raise ValueError("Enter an assignment or select Listen for work")
-        if len(task) > 16000:
-            raise ValueError("Assignment too long")
+        task = (
+            None
+            if data.get("serve")
+            else assignment(data.get("assignment") or data.get("task", "")).model_dump(
+                mode="json"
+            )
+        )
         manager.start(data["agent"], task, bool(data.get("serve")))
         return {"ok": True}
 

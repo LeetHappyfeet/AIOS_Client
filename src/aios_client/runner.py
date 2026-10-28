@@ -4,10 +4,13 @@ import hashlib
 import json
 import os
 import threading
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from .assignment import assignment
+from .verification import bounded_text, snapshot, verify
 from .config import aios_url
 from .http import API, Model
 from .journal import Journal
@@ -91,8 +94,8 @@ class Runner:
 
     def binding(self):
         protocol = self.api.request("GET", "workspace-client/protocol")
-        if protocol.get("version") != 1:
-            raise ValueError("AIOS workspace protocol v1 is required")
+        if protocol.get("version") != 2:
+            raise ValueError("AIOS workspace protocol v2 is required")
         p = self.profile
         root = str(Path(p["workspace"]).expanduser().resolve(strict=True))
         key = hashlib.sha256(
@@ -141,17 +144,18 @@ class Runner:
             bid = binding["binding_id"]
             self.journal.flush(self.api)
             if objective:
+                spec = assignment(objective).model_dump(mode="json")
                 request_id = request_id or str(uuid4())
                 # Save the operator request ID before transmitting. A timeout can be retried with this ID.
                 self.journal.event(
                     request_id,
                     "assignment",
-                    {"objective": objective, "request_id": request_id},
+                    {**spec, "request_id": request_id},
                 )
                 submitted = self.api.request(
                     "POST",
                     f"workspace-client/{bid}/submit",
-                    json={"objective": objective, "request_id": request_id},
+                    json={**spec, "request_id": request_id},
                 )
                 target = submitted["run_id"]
             else:
@@ -193,9 +197,14 @@ class Runner:
         )
         lease_stop = threading.Event()
         lease_error = []
+        deadlines = []
 
         def renew():
             while not lease_stop.wait(1):
+                if deadlines and time.monotonic() >= deadlines[0]:
+                    lease_error.append("Assignment wall time budget reached")
+                    self.stop()
+                    return
                 if (self.directory / "stop").exists():
                     self.stop()
                     return
@@ -213,11 +222,31 @@ class Runner:
         renewer = threading.Thread(target=renew, daemon=True)
         renewer.start()
         status, result = "failed", {}
+        started = time.monotonic()
         try:
+            spec = assignment(claim.get("assignment") or claim["objective"])
+            if claim.get("assignment_hash") != spec.digest():
+                raise ValueError("Assignment hash mismatch")
+            deadline = started + spec.budgets.wall_seconds
+            deadlines.append(deadline)
+            workspace.command_timeout = min(120, spec.budgets.wall_seconds)
+            self.journal.event(
+                rid,
+                "assignment_spec",
+                {"assignment": spec.model_dump(mode="json"), "hash": spec.digest()},
+            )
+            workspace.snapshot_includes = spec.preserve_paths + [
+                o.path for o in spec.expected_outputs
+            ]
+            baseline_git = workspace.git_status()
+            baseline = snapshot(workspace)
+            if not baseline["complete"]:
+                raise ValueError(baseline.get("error", "Baseline snapshot incomplete"))
+            deadline = started + spec.budgets.wall_seconds
             hud = self.context(bid)
             messages = [
                 {"role": "system", "content": SYSTEM + "\nAIOS context:\n" + hud},
-                {"role": "user", "content": claim["objective"]},
+                {"role": "user", "content": json.dumps(spec.model_dump(mode="json"))},
             ]
             self._deliver(
                 rid,
@@ -230,12 +259,14 @@ class Runner:
                 },
             )
             seen_calls = set()
-            for step in range(60):
+            for step in range(spec.budgets.model_steps):
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("Assignment wall time budget reached")
                 if self.stop_event.is_set():
                     raise RuntimeError(
-                        "Stopped" if not lease_error else "Lease renewal failed"
+                        "Stopped" if not lease_error else lease_error[-1]
                     )
-                if len(json.dumps(messages)) > 100_000:
+                if len(json.dumps(messages)) > spec.budgets.context_chars:
                     raise RuntimeError(
                         "Working context budget reached; inspect journal and submit a narrower task"
                     )
@@ -244,7 +275,15 @@ class Runner:
                     if self.stop_event.is_set():
                         raise RuntimeError("Stopped")
                 try:
-                    response = self.model.completion(self.model_id, messages, TOOLS)
+                    response = self.model.completion(
+                        self.model_id,
+                        messages,
+                        TOOLS,
+                        timeout=min(
+                            float(self.model.http.timeout.read or 120),
+                            max(0.01, deadline - time.monotonic()),
+                        ),
+                    )
                 finally:
                     self.gate.release()
                 calls = response.get("tool_calls") or []
@@ -259,7 +298,9 @@ class Runner:
                 messages.append(assistant)
                 self.journal.event(rid, "assistant", workspace.clean(assistant))
                 if not calls:
-                    if any(r["p"].poll() is None for r in workspace.processes.values()):
+                    if any(
+                        not r["done"].is_set() for r in workspace.processes.values()
+                    ):
                         messages.append(
                             {
                                 "role": "user",
@@ -271,17 +312,39 @@ class Runner:
                         raise ValueError(
                             "Model returned neither tool calls nor a final report"
                         )
-                    status = "succeeded"
+                    final_git = workspace.git_status()
+                    evidence = verify(
+                        workspace, spec, baseline, self.stop_event, deadline
+                    )
+                    self.journal.event(rid, "verification", evidence)
+                    status = (
+                        "finished"
+                        if evidence["status"]
+                        in {"passed", "not_configured", "incomplete", "stale"}
+                        else "failed"
+                    )
+                    if self.stop_event.is_set():
+                        status = "interrupted"
                     result = {
-                        "report": assistant["content"][:16000],
-                        "verification": "worker_report",
-                        "git": workspace.execute("git_status", {}),
-                        "diff": workspace.execute("git_diff", {}),
+                        "report": bounded_text(assistant["content"], 6000),
+                        "verification": "worker_evidence",
+                        "evidence": evidence,
+                        "baseline_git": {
+                            "head": baseline_git.get("head"),
+                            "output": bounded_text(
+                                baseline_git.get("output", ""), 1000
+                            ),
+                        },
+                        "final_git": {
+                            "head": final_git.get("head"),
+                            "output": bounded_text(final_git.get("output", ""), 1000),
+                        },
+                        "goal_review": "pending" if spec.goal_id else "not_linked",
                     }
                     break
                 for call in calls:
-                    if self.stop_event.is_set():
-                        raise RuntimeError("Stopped")
+                    if self.stop_event.is_set() or time.monotonic() >= deadline:
+                        raise RuntimeError("Stopped or wall time budget reached")
                     call_id = call.get("id")
                     if not isinstance(call_id, str) or not call_id:
                         raise ValueError("Tool call has no ID")
@@ -301,6 +364,9 @@ class Runner:
                             workspace.clean(
                                 {"id": call_id, "name": name, "arguments": args}
                             ),
+                        )
+                        workspace.command_timeout = min(
+                            120, max(0.01, deadline - time.monotonic())
                         )
                         observation = workspace.execute(name, args)
                     except (ValueError, KeyError, OSError, UnicodeError) as exc:
@@ -329,17 +395,57 @@ class Runner:
                         },
                     )
             else:
-                raise RuntimeError("Maximum 60 model steps reached")
-            self._deliver(
-                rid,
-                prefix + "/observe",
+                raise RuntimeError("Assignment model step budget reached")
+            check_summary = [
                 {
-                    **lease,
-                    "event_key": str(uuid4()),
-                    "text": "Workspace final worker report: " + result["report"],
-                    "payload": {"verification": "worker_report"},
-                },
+                    k: check.get(k)
+                    for k in (
+                        "id",
+                        "exit_code",
+                        "timed_out",
+                        "cancelled",
+                        "output_complete",
+                        "log_sha256",
+                    )
+                }
+                for check in result["evidence"]["checks"]
+            ]
+            verification_text = (
+                "Workspace host verification: "
+                + result["evidence"]["status"]
+                + ". Required check results: "
+                + json.dumps(check_summary)
+                + ". Protected-path violations: "
+                + json.dumps(result["evidence"]["violations"])
+                + ". Output expectations met: "
+                + str(all(o["passed"] for o in result["evidence"]["outputs"]))
+                + "\nWorker report (unverified prose): "
+                + result["report"]
             )
+            try:
+                self._deliver(
+                    rid,
+                    prefix + "/observe",
+                    {
+                        **lease,
+                        "event_key": str(uuid4()),
+                        "text": verification_text,
+                        "payload": {
+                            "verification": "worker_evidence",
+                            "status": result["evidence"]["status"],
+                            "checks": check_summary,
+                            "manifest_sha256": result["evidence"]["manifest_sha256"],
+                        },
+                    },
+                )
+            except Exception:
+                self.journal.event(
+                    rid,
+                    "delivery_pending",
+                    {
+                        "message": "Final observation queued; preserving verification result"
+                    },
+                )
         except Exception as exc:
             status = "interrupted" if self.stop_event.is_set() else "failed"
             result = {
