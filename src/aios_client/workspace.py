@@ -257,7 +257,14 @@ class Workspace:
             start_new_session=os.name != "nt",
             creationflags=subprocess.CREATE_NEW_PROCESS_GROUP if os.name == "nt" else 0,
         )
-        record = {"p": p, "log": log, "truncated": False, "done": threading.Event()}
+        record = {
+            "p": p,
+            "log": log,
+            "truncated": False,
+            "done": threading.Event(),
+            "timed_out": False,
+            "cancelled": False,
+        }
         self.processes[pid] = record
 
         def drain():
@@ -295,9 +302,12 @@ class Workspace:
                 p.stdout.close()
                 record["done"].set()
 
+        command_timeout = self.command_timeout
+
         def watchdog():
-            if not record["done"].wait(self.command_timeout):
-                self.stop_process(pid)
+            if not record["done"].wait(command_timeout):
+                record["timed_out"] = True
+                self.stop_process(pid, timed_out=True)
 
         threading.Thread(target=drain, daemon=True).start()
         threading.Thread(target=watchdog, daemon=True).start()
@@ -323,10 +333,11 @@ class Workspace:
             "artifact_id": r["log"].name,
         }
 
-    def stop_process(self, process_id):
+    def stop_process(self, process_id, timed_out=False):
         record = self.processes[process_id]
         p = record["p"]
         if p.poll() is None or not record["done"].is_set():
+            record["cancelled"] |= not timed_out
             if os.name == "nt":
                 subprocess.run(
                     ["taskkill", "/F", "/T", "/PID", str(p.pid)],

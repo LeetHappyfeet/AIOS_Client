@@ -76,7 +76,13 @@ def main():
             signal.signal(signal.SIGINT, lambda *_: runner.stop())
             signal.signal(signal.SIGTERM, lambda *_: runner.stop())
             result = runner.work(
-                args.task_file.read_text() if args.command == "run" else None,
+                (
+                    json.loads(args.task_file.read_text())
+                    if args.task_file.suffix.lower() == ".json"
+                    else args.task_file.read_text()
+                )
+                if args.command == "run"
+                else None,
                 request_id=getattr(args, "request_id", None),
                 serve=args.command == "serve",
             )

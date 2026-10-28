@@ -1,0 +1,9 @@
+{
+  "objective": "Fix the calculator addition bug and retain its public interface.",
+  "expected_outputs": [{"path": "calc.py", "kind": "file"}],
+  "required_checks": [
+    {"id": "unit-tests", "command": "python -m unittest -v", "cwd": ".", "timeout_seconds": 120}
+  ],
+  "preserve_paths": ["test_calc.py"],
+  "budgets": {"model_steps": 60, "wall_seconds": 1800, "context_chars": 100000}
+}

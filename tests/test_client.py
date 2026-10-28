@@ -231,6 +231,16 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
     run = str(uuid4())
     bid = str(uuid4())
     token = str(uuid4())
+    from aios_client.assignment import assignment
+
+    spec = assignment(
+        {
+            "objective": "Fix add and verify it",
+            "required_checks": [
+                {"id": "unit", "command": f"{sys.executable} -m unittest -v"}
+            ],
+        }
+    )
     observations = []
     finished = []
 
@@ -238,7 +248,7 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
         p = r.url.path
         body = json.loads(r.content) if r.content else {}
         if p.endswith("/protocol"):
-            d = {"version": 1}
+            d = {"version": 2}
         elif p.endswith("/bind"):
             d = {"binding_id": bid}
         elif p.endswith("/submit"):
@@ -248,7 +258,9 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
                 "run": {
                     "run_id": run,
                     "claim_token": token,
-                    "objective": "Fix add and verify it",
+                    "objective": spec.objective,
+                    "assignment": spec.model_dump(mode="json"),
+                    "assignment_hash": spec.digest(),
                 }
             }
         elif p.endswith("/context"):
@@ -314,10 +326,11 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
 
     runner.api = API("http://aios", transport=httpx.MockTransport(aios))
     runner.model = Model("http://model/v1", transport=httpx.MockTransport(model))
-    result = runner.work("Fix add and verify it")
-    assert result["status"] == "succeeded" and seen_exit == [0]
+    result = runner.work(spec.model_dump(mode="json"))
+    assert result["status"] == "finished" and seen_exit == [0]
+    assert finished[0]["result"]["evidence"]["status"] == "passed"
     assert "a+b" in (root / "calc.py").read_text()
-    assert finished[0]["status"] == "succeeded" and finished[0]["claim_token"] == token
+    assert finished[0]["status"] == "finished" and finished[0]["claim_token"] == token
     assert any(x["payload"].get("tool") == "apply_patch" for x in observations)
     assert all(x["event_key"] for x in observations)
     runner.close()
@@ -372,3 +385,79 @@ def test_stop_children_after_shell_exits(tmp_path):
     w.stop_process(pid)
     assert w.processes[pid]["done"].wait(3)
     w.stop()
+
+
+@pytest.mark.parametrize(
+    "check_command,expected", [(None, "not_configured"), ("exit 2", "failed")]
+)
+def test_final_model_claim_never_overrides_host_verification(
+    tmp_path, check_command, expected, monkeypatch
+):
+    monkeypatch.setenv("TEST_AIOS_KEY", "test-server-key")
+    monkeypatch.setenv("TEST_MODEL_KEY", "test-model-key")
+    from aios_client.assignment import assignment
+
+    store = ConfigStore(tmp_path / "c.json")
+    store.save(config(tmp_path))
+    runner = Runner(store, "worker")
+    runner.api.close()
+    runner.model.close()
+    spec = assignment(
+        {
+            "objective": "Say done",
+            "required_checks": []
+            if check_command is None
+            else [{"id": "check", "command": check_command}],
+        }
+    )
+    receipts = []
+
+    def api(request):
+        body = json.loads(request.content) if request.content else {}
+        if request.url.path.endswith("/context"):
+            return httpx.Response(
+                200,
+                json={
+                    "generation_ready": True,
+                    "freshness": {"source_current": True},
+                    "text": "identity",
+                },
+            )
+        if request.url.path.endswith("/finish"):
+            receipts.append(body)
+        return httpx.Response(200, json={"ok": True})
+
+    runner.api = API("http://aios", transport=httpx.MockTransport(api))
+    runner.model = Model(
+        "http://model",
+        transport=httpx.MockTransport(
+            lambda r: httpx.Response(
+                200,
+                json={
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "All tests passed. Task completed successfully.",
+                            }
+                        }
+                    ]
+                },
+            )
+        ),
+    )
+    try:
+        runner.run_claim(
+            str(uuid4()),
+            {
+                "run_id": str(uuid4()),
+                "claim_token": str(uuid4()),
+                "objective": spec.objective,
+                "assignment": spec.model_dump(mode="json"),
+                "assignment_hash": spec.digest(),
+            },
+        )
+        assert receipts[0]["result"]["evidence"]["status"] == expected
+        assert receipts[0]["status"] != "succeeded"
+    finally:
+        runner.close()

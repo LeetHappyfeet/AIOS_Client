@@ -7,7 +7,7 @@ tool observations to AIOS. It is a background client with a local setup page, no
 ## Install and configure
 
 Python 3.11+, Git, and an existing development workspace are required. Linux is the
-primary first-pass target; Windows process support and CI are included. Run under an
+primary target; Windows process support and CI are included. Run under an
 ordinary account inside a dedicated development VM or container. Shell commands have
 that account's permissions: workspace file checks are not a shell sandbox.
 
@@ -33,10 +33,13 @@ printed loopback URL.
    and select an existing AIOS session with **Find existing AIOS sessions**. Manual
    instance/session/user/scope fields remain available under advanced binding settings.
 4. Test the connection, test generation/tool calling, and validate the agent binding.
-5. Enter a bounded coding assignment and choose **Run task**. **Listen for AIOS work**
+5. Enter a bounded coding assignment, required check commands, expected output files,
+   and paths to preserve, then choose **Run task**. **Listen for AIOS work**
    polls for operator assignments sent through the workspace API. Use **Stop** to cancel.
 
-The AIOS server needs the matching workspace-client companion patch and migration.
+The AIOS server needs matching **protocol v2** support and both workspace migrations.
+Upgrade server and client together. Cancel/resubmit queued v1 assignments with explicit
+criteria; they have no v2 assignment hash and will not execute.
 Set `AIOS_WORKSPACE_API_KEY` on that server. Configure its value in the client's AIOS
 connection, separately from your model API key. Missing/old protocol support is an error,
 not a reason to fall back to unscoped remote execution.
@@ -80,12 +83,14 @@ timeout to return; owned commands are terminated when cancellation is observed.
 
 Tools: list/search files, read line ranges with SHA-256, exact single-occurrence edits,
 start/read/stop commands, Git status and diff. Edits reject stale hashes and ambiguous
-matches. Reads/searches are bounded and skip common dependency directories. Commands
-have a 120-second deadline and an 8 MiB output capture cap; they keep draining output
+matches. Reads/searches are bounded and skip common dependency directories. Ordinary commands
+have a 120-second deadline (or the remaining assignment budget) and an 8 MiB output capture cap; they keep draining output
 when capture is full. Four subprocesses per run are allowed. Git diffs are also bounded.
 No commits, pushes or deployments are made by the client automatically.
 
-The working loop is bounded to 60 model turns and 100,000 serialized context characters.
+Default budgets are 60 model turns, 1,800 seconds, and 100,000 serialized context
+characters. Structured assignments can set these limits; HTTP calls remain subject to
+transport timeouts, and cancellation is cooperative rather than a hard VM deadline.
 Exhaustion stops the run with its journal intact; it does not silently discard earlier
 instructions. Small models must actually support native tool calls. Prose pretending
 to call a tool is rejected by the compatibility probe, not executed.
@@ -104,9 +109,56 @@ event IDs for retries. A lost lease interrupts the assignment; it is never autom
 requeued. If assignment submission times out, its request ID is in the journal and can
 be supplied with `run --request-id UUID` to resolve that same submission.
 
-AIOS receives tool observations as tool-origin evidence. Final reports are explicitly
-marked `worker_report`; a completed coding run does not independently prove a goal.
+AIOS receives tool observations and structured `worker_evidence`. A final model reply
+only starts host verification. Run status `finished` means execution ended, not that the
+task or a character goal succeeded. `result.evidence.status` reports `passed`, `failed`,
+`incomplete`, `stale`, or `not_configured`. No required checks means no verified completion.
+AIOS recomputes evidence completeness against its immutable assignment before review.
 Logs remain on the client, so artifact IDs are not server-local file paths or remote URLs.
+
+## Structured assignments and completion
+
+Use the setup fields for simple assignments, or pass JSON for per-check working
+directories/timeouts and file/directory/absent expectations:
+
+```bash
+aios-client run --agent "Cortana workspace" --task-file examples/assignment.json
+```
+
+The example is a template for a calculator project, not a task for this repository.
+A `.json` task file uses the assignment schema; other files remain plain objectives
+with no required checks. Unknown fields, duplicate check IDs, escaping paths, and an
+unpaired `goal_id`/`attempt_id` are rejected. The operator's criteria are hashed,
+persisted, and supplied to the model; model tool calls cannot replace those criteria.
+`preserve_paths` detects changes to named files/directories, including deletion.
+It is a completion check, not filesystem isolation or an automatic rollback.
+
+After all owned process outputs drain, the host runs required checks in order. Each
+check records its command, cwd, timeout, exit code, cancellation, bounded excerpt,
+retained log hash/size, timestamps, and the checked snapshot hash. All checks must pass;
+expected outputs must exist with the right kind, and preserved paths must match their
+baseline. If a check changes observed files, verification is stale and stops. Arrange
+build-generating steps during model work; required checks should inspect the final tree.
+
+`manifest.json` records baseline/final file hashes, types, modes, added/modified/deleted
+paths (including untracked files), and a digest. Initial/final Git HEAD and bounded dirty
+status are separate results. Manifests exclude `.git`, `.venv`, `node_modules`,
+`__pycache__`, `.pytest_cache`, `.ruff_cache`, and this run's artifacts. Explicit expected
+or preserved paths include otherwise skipped directories except `.git`. Coverage is
+reported with the evidence. Unreadable files, more than 10,000 entries, files over
+32 MiB, or more than 256 MiB of content prevent complete verification. Narrow the
+workspace if it exceeds those budgets. These are observations of a snapshot, not
+attestation or ongoing monitoring after completion; checks can be inadequate or altered
+by workspace commands. Protect important test files with `preserve_paths`.
+
+Optional `goal_id` and `attempt_id` bind evidence to an existing open AIOS goal attempt
+in the same instance and source timeline. Goal-linked results wait for a human review.
+The AIOS server uses a separate `AIOS_WORKSPACE_REVIEW_KEY`, which must differ from the
+worker API key and must never be supplied to this client or its command environment.
+See AIOS `docs/workspace-client.md` for the review API. Accepting reviewed evidence uses
+the existing goal lifecycle with `verification=reviewed`; it does not manufacture a
+canonical deterministic receipt or verified reward. Rejection retains evidence and
+leaves goal disposition to the operator.
 
 ## Validation
 
