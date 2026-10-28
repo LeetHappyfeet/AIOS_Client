@@ -11,6 +11,7 @@ from .assignment import assignment
 from .config import ConfigStore, aios_url
 from .http import API, Model
 from .journal import Journal
+from .protocol import negotiate
 from .runner import Runner, agent_dir
 
 
@@ -146,9 +147,13 @@ def create_app(store: ConfigStore, port=8765):
         api = API(aios_url(p), store.secrets.get(p.get("secret_ref", "")))
         try:
             result = api.request("GET", "workspace-client/protocol")
-            if result.get("version") != 2:
-                raise ValueError("AIOS workspace protocol v2 required")
-            return {"ok": True, "url": aios_url(p), "protocol": result}
+            version = negotiate(result)
+            return {
+                "ok": True,
+                "url": aios_url(p),
+                "protocol": result,
+                "negotiated_version": version,
+            }
         finally:
             api.close()
 
@@ -206,6 +211,8 @@ def create_app(store: ConfigStore, port=8765):
                 "ok": True,
                 "binding_id": b["binding_id"],
                 "instance_id": b["instance_id"],
+                "protocol_version": runner.protocol_version,
+                "link_id": runner.profile.get("link_id"),
             }
         finally:
             runner.close()

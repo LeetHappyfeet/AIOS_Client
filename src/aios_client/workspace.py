@@ -88,6 +88,7 @@ class Workspace:
         self.artifacts = Path(artifacts)
         self.artifacts.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.processes = {}
+        self.process_lock = threading.RLock()
         self.secrets = tuple(s for s in secrets if s)
         self.command_timeout = command_timeout
         self.capture_limit = 8 * 1024 * 1024
@@ -237,6 +238,12 @@ class Workspace:
         }
 
     def run_command(self, command, cwd="."):
+        with self.process_lock:
+            if self.cancelled.is_set():
+                raise RuntimeError("Workspace stopped")
+            return self._start_command(command, cwd)
+
+    def _start_command(self, command, cwd):
         if not command or len(command) > 8000:
             raise ValueError("Invalid command length")
         if len([x for x in self.processes.values() if x["p"].poll() is None]) >= 4:
@@ -244,7 +251,10 @@ class Workspace:
         pid = str(uuid4())
         log = self.artifacts / (pid + ".log")
         env = {
-            k: v for k, v in os.environ.items() if not any(s in v for s in self.secrets)
+            k: v
+            for k, v in os.environ.items()
+            if k not in {"AIOS_WORKSPACE_REVIEW_KEY", "AIOS_WORKSPACE_OPERATOR_KEY"}
+            and not any(s in v for s in self.secrets)
         }
         p = subprocess.Popen(
             command,
@@ -359,8 +369,10 @@ class Workspace:
         return {"process_id": process_id, "exit_code": p.poll()}
 
     def stop(self):
-        self.cancelled.set()
-        for pid in list(self.processes):
+        with self.process_lock:
+            self.cancelled.set()
+            processes = list(self.processes)
+        for pid in processes:
             self.stop_process(pid)
 
     def git_status(self):

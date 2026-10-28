@@ -127,6 +127,11 @@ class ConfigStore:
                     raise ValueError("Invalid secret reference")
         for p in data["aios"].values():
             aios_url(p)
+            if p.get("secret_ref") in {
+                "env:AIOS_WORKSPACE_REVIEW_KEY",
+                "env:AIOS_WORKSPACE_OPERATOR_KEY",
+            }:
+                raise ValueError("Configure only the worker credential in the client")
         for p in data["endpoints"].values():
             base_url(p["base_url"])
             if not 1 <= int(p.get("concurrency", 1)) <= 16:
@@ -134,6 +139,27 @@ class ConfigStore:
             if not 1 <= float(p.get("timeout", 120)) <= 1800:
                 raise ValueError("Endpoint timeout must be 1–1800 seconds")
         for p in data["agents"].values():
+            if p.get("protocol_version", "auto") not in ("auto", 2, 3):
+                raise ValueError("protocol_version must be auto, 2, or 3")
+            for field in ("origin_instance_id", "link_id"):
+                if p.get(field):
+                    UUID(p[field])
+            if bool(p.get("origin_instance_id")) != bool(p.get("link_id")):
+                raise ValueError(
+                    "Save both the operator-created link_id and origin_instance_id"
+                )
+            if p.get("link_id") and p.get("protocol_version") == 2:
+                raise ValueError("Environment links require protocol v3")
+            if p.get("origin_instance_id") == p.get("instance_id"):
+                raise ValueError(
+                    "Use a dedicated execution instance, separate from the origin"
+                )
+            if type(p.get("share_memory", False)) is not bool:
+                raise ValueError("share_memory must be a boolean")
+            if p.get("share_memory") and not p.get("link_id"):
+                raise ValueError(
+                    "Memory sharing requires an operator-created environment link"
+                )
             for field, group in (("aios", "aios"), ("endpoint", "endpoints")):
                 if p.get(field) not in data[group]:
                     raise ValueError(f"Unknown {field} profile")

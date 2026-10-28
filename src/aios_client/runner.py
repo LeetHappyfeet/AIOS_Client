@@ -10,11 +10,12 @@ from pathlib import Path
 from uuid import uuid4
 
 from .assignment import assignment
-from .verification import bounded_text, snapshot, verify
 from .config import aios_url
-from .http import API, Model
+from .http import API, APIError, APIUnavailable, Model
 from .journal import Journal
-from .workspace import TOOLS, Workspace
+from .protocol import negotiate
+from .verification import bounded_text, snapshot, verify
+from .workspace import TOOLS, Workspace, schema
 
 SYSTEM = """You are the configured AIOS character working in a real software workspace.
 Use the supplied AIOS context for identity and relevant memory. The user's task defines the assignment.
@@ -23,8 +24,30 @@ Inspect source before editing. Use expected file hashes. Verify your work with r
 Follow running commands using read_process; a started process is not a successful verification.
 Use git_status and git_diff to inspect changes. Do not commit, push, or deploy unless the assignment asks.
 When finished, give a concise factual report of changes, verification, and unresolved issues.
+Use aios_recall to retrieve permitted character knowledge during work when available.
+Recall status unavailable or changed is not an empty search; preserve provenance and knowledge flags.
+Use aios_progress for meaningful milestones or blocked reasons, not every tool call.
 Never claim a test passed without observing its exit status. There is no simulated terminal or world.
 """
+
+
+V3_TOOLS = [
+    schema(
+        "aios_recall",
+        "Recall permitted character knowledge for this assignment; preserve provenance",
+        {"query": {"type": "string", "minLength": 1, "maxLength": 600}},
+        ["query"],
+    ),
+    schema(
+        "aios_progress",
+        "Report a meaningful milestone or a blocked reason",
+        {
+            "kind": {"type": "string", "enum": ["progress", "blocked"]},
+            "summary": {"type": "string", "minLength": 1, "maxLength": 1000},
+        },
+        ["kind", "summary"],
+    ),
+]
 
 
 def agent_dir(store, name):
@@ -80,6 +103,8 @@ class Runner:
         self.stop_event = threading.Event()
         self.workspace = None
         self.last_error = None
+        self.protocol_version = 2
+        self.run_stop = threading.Event()
 
     def close(self):
         self.stop()
@@ -89,13 +114,18 @@ class Runner:
 
     def stop(self):
         self.stop_event.set()
+        self.run_stop.set()
         if self.workspace:
             self.workspace.stop()
 
     def binding(self):
         protocol = self.api.request("GET", "workspace-client/protocol")
-        if protocol.get("version") != 2:
-            raise ValueError("AIOS workspace protocol v2 is required")
+        requested = (
+            3
+            if self.profile.get("link_id")
+            else self.profile.get("protocol_version", "auto")
+        )
+        self.protocol_version = negotiate(protocol, requested)
         p = self.profile
         root = str(Path(p["workspace"]).expanduser().resolve(strict=True))
         key = hashlib.sha256(
@@ -116,11 +146,18 @@ class Runner:
             },
         )
 
-    def context(self, binding_id):
+    def context(self, binding_id, run_id=None, lease=None):
         for attempt in range(6):
-            if self.stop_event.is_set():
+            if self.stop_event.is_set() or self.run_stop.is_set():
                 raise RuntimeError("Stopped")
-            hud = self.api.request("POST", f"workspace-client/{binding_id}/context")
+            if self.protocol_version == 3:
+                hud = self.api.request(
+                    "POST",
+                    f"workspace-client/v3/{binding_id}/runs/{run_id}/context",
+                    json=lease,
+                )
+            else:
+                hud = self.api.request("POST", f"workspace-client/{binding_id}/context")
             f = hud.get("freshness", {})
             if (
                 hud.get("generation_ready") is True
@@ -131,6 +168,24 @@ class Runner:
             self.stop_event.wait(min(0.5 * 2**attempt, 4))
         raise RuntimeError("AIOS context did not become generation-ready")
 
+    def sync_events(self, metadata, drain=True):
+        if metadata["protocol_version"] != 3:
+            return
+        cursor = metadata["cursor"]
+        while True:
+            page = self.api.request(
+                "GET", metadata["v3_prefix"] + "/events", params={"after": cursor}
+            )
+            events, next_cursor = page["events"], page["next_cursor"]
+            if type(next_cursor) is not int or next_cursor < cursor:
+                raise ValueError("Invalid remote event cursor")
+            self.journal.remote_events(metadata["run_id"], events, next_cursor)
+            if not drain or len(events) < 100:
+                return
+            if next_cursor == cursor:
+                raise ValueError("Remote events did not advance")
+            cursor = next_cursor
+
     def _deliver(self, run, path, body):
         self.journal.queue(str(uuid4()), run, path, body)
         self.journal.flush(self.api)
@@ -139,10 +194,25 @@ class Runner:
         with run_lock(self.directory / "run.lock"):
             stop_file = self.directory / "stop"
             stop_file.unlink(missing_ok=True)
-            self.journal.recover()
+            if objective and self.profile.get("link_id"):
+                raise ValueError(
+                    "Submit linked assignments in AIOS with the separate operator credential; use serve here"
+                )
             binding = self.binding()
             bid = binding["binding_id"]
+            retained = self.journal.claims()
+            for old in retained:
+                if (
+                    old["server_url"] != str(self.api.http.base_url)
+                    or old["binding_id"] != bid
+                ):
+                    raise ValueError(
+                        "Retained runs belong to another server/binding; reconcile before changing this profile"
+                    )
+            self.journal.recover()
             self.journal.flush(self.api)
+            for old in retained:
+                self.sync_events(old)
             if objective:
                 spec = assignment(objective).model_dump(mode="json")
                 request_id = request_id or str(uuid4())
@@ -164,11 +234,27 @@ class Runner:
                 if stop_file.exists():
                     self.stop()
                     break
-                claimed = self.api.request(
-                    "POST",
-                    f"workspace-client/{bid}/claim",
-                    json={"worker_key": self.profile["username"]},
-                )["run"]
+                try:
+                    # Retry only persisted reports and polling, never workspace operations.
+                    self.journal.flush(self.api)
+                    claimed = self.api.request(
+                        "POST",
+                        f"workspace-client/{bid}/claim",
+                        json={
+                            "worker_key": self.profile["username"],
+                            "protocol_version": self.protocol_version,
+                        },
+                    )["run"]
+                except (APIUnavailable, APIError) as exc:
+                    if not serve or (
+                        isinstance(exc, APIError)
+                        and exc.status < 500
+                        and exc.status != 429
+                    ):
+                        raise
+                    self.last_error = str(exc)
+                    self.stop_event.wait(2)
+                    continue
                 if claimed:
                     self.run_claim(bid, claimed)
                     if not serve and (target is None or target == claimed["run_id"]):
@@ -188,8 +274,23 @@ class Runner:
             "claim_token": claim["claim_token"],
         }
         prefix = f"workspace-client/{bid}/runs/{rid}"
-        # If the server still offers a run in our local history, never rerun its side effects.
-        self.journal.start(rid, self.name, claim["objective"])
+        v3_prefix = f"workspace-client/v3/{bid}/runs/{rid}"
+        metadata = {
+            "binding_id": bid,
+            "server_url": str(self.api.http.base_url),
+            "protocol_version": self.protocol_version,
+            "prefix": prefix,
+            "v3_prefix": v3_prefix,
+            "lease": lease,
+            "claim": claim,
+            "link_id": self.profile.get("link_id"),
+            "origin_instance_id": self.profile.get("origin_instance_id"),
+        }
+        # Persist lease and immutable assignment before any workspace side effects.
+        self.journal.start(rid, self.name, claim["objective"], metadata)
+        self.run_stop = threading.Event()
+        if self.stop_event.is_set():
+            self.run_stop.set()
         workspace = self.workspace = Workspace(
             self.profile["workspace"],
             self.directory / "artifacts" / rid,
@@ -198,6 +299,33 @@ class Runner:
         lease_stop = threading.Event()
         lease_error = []
         deadlines = []
+        cancelled = threading.Event()
+        renewal_lock = threading.Lock()
+
+        def renew_current():
+            with renewal_lock:
+                response = self.api.request("POST", prefix + "/renew", json=lease)
+                if response.get("cancel_requested") is True:
+                    cancelled.set()
+                    self.run_stop.set()
+                    workspace.stop()
+                if self.stop_event.is_set() or self.run_stop.is_set():
+                    raise RuntimeError(
+                        "Cancellation requested" if cancelled.is_set() else "Stopped"
+                    )
+
+        def progress(kind, summary):
+            if self.protocol_version == 3:
+                self._deliver(
+                    rid,
+                    v3_prefix + "/progress",
+                    {
+                        **lease,
+                        "event_key": str(uuid4()),
+                        "kind": kind,
+                        "summary": bounded_text(workspace.redact(summary), 1000),
+                    },
+                )
 
         def renew():
             while not lease_stop.wait(1):
@@ -208,15 +336,23 @@ class Runner:
                 if (self.directory / "stop").exists():
                     self.stop()
                     return
-                if not getattr(renew, "ticks", 0) % 20 == 19:
+                if getattr(renew, "ticks", 0) % 20 != 19:
                     renew.ticks = getattr(renew, "ticks", 0) + 1
                     continue
                 renew.ticks = 0
                 try:
-                    self.api.request("POST", prefix + "/renew", json=lease)
+                    renew_current()
+                    if not lease_stop.is_set():
+                        self.sync_events(
+                            next(
+                                m for m in self.journal.claims() if m["run_id"] == rid
+                            ),
+                            drain=False,
+                        )
                 except Exception as exc:
-                    lease_error.append(str(exc))
-                    self.stop()
+                    if not cancelled.is_set():
+                        lease_error.append(str(exc))
+                        self.stop()
                     return
 
         renewer = threading.Thread(target=renew, daemon=True)
@@ -224,6 +360,7 @@ class Runner:
         status, result = "failed", {}
         started = time.monotonic()
         try:
+            renew_current()
             spec = assignment(claim.get("assignment") or claim["objective"])
             if claim.get("assignment_hash") != spec.digest():
                 raise ValueError("Assignment hash mismatch")
@@ -243,7 +380,7 @@ class Runner:
             if not baseline["complete"]:
                 raise ValueError(baseline.get("error", "Baseline snapshot incomplete"))
             deadline = started + spec.budgets.wall_seconds
-            hud = self.context(bid)
+            hud = self.context(bid, rid, lease)
             messages = [
                 {"role": "system", "content": SYSTEM + "\nAIOS context:\n" + hud},
                 {"role": "user", "content": json.dumps(spec.model_dump(mode="json"))},
@@ -258,11 +395,15 @@ class Runner:
                     "payload": {"kind": "assignment"},
                 },
             )
+            progress(
+                "progress",
+                "Assignment accepted; execution context and workspace baseline prepared",
+            )
             seen_calls = set()
             for step in range(spec.budgets.model_steps):
                 if time.monotonic() >= deadline:
                     raise RuntimeError("Assignment wall time budget reached")
-                if self.stop_event.is_set():
+                if self.stop_event.is_set() or self.run_stop.is_set():
                     raise RuntimeError(
                         "Stopped" if not lease_error else lease_error[-1]
                     )
@@ -272,13 +413,14 @@ class Runner:
                     )
                 # Shared endpoint gate applies across agent profiles in the local host process.
                 while not self.gate.acquire(timeout=0.2):
-                    if self.stop_event.is_set():
+                    if self.stop_event.is_set() or self.run_stop.is_set():
                         raise RuntimeError("Stopped")
                 try:
+                    renew_current()
                     response = self.model.completion(
                         self.model_id,
                         messages,
-                        TOOLS,
+                        TOOLS + (V3_TOOLS if self.protocol_version == 3 else []),
                         timeout=min(
                             float(self.model.http.timeout.read or 120),
                             max(0.01, deadline - time.monotonic()),
@@ -286,6 +428,7 @@ class Runner:
                     )
                 finally:
                     self.gate.release()
+                renew_current()
                 calls = response.get("tool_calls") or []
                 assistant = {
                     "role": "assistant",
@@ -312,10 +455,16 @@ class Runner:
                         raise ValueError(
                             "Model returned neither tool calls nor a final report"
                         )
+                    progress(
+                        "progress",
+                        "Model work ended; running immutable assignment checks",
+                    )
+                    renew_current()
                     final_git = workspace.git_status()
                     evidence = verify(
-                        workspace, spec, baseline, self.stop_event, deadline
+                        workspace, spec, baseline, self.run_stop, deadline
                     )
+                    renew_current()
                     self.journal.event(rid, "verification", evidence)
                     status = (
                         "finished"
@@ -323,8 +472,8 @@ class Runner:
                         in {"passed", "not_configured", "incomplete", "stale"}
                         else "failed"
                     )
-                    if self.stop_event.is_set():
-                        status = "interrupted"
+                    if self.stop_event.is_set() or self.run_stop.is_set():
+                        status = "cancelled" if cancelled.is_set() else "interrupted"
                     result = {
                         "report": bounded_text(assistant["content"], 6000),
                         "verification": "worker_evidence",
@@ -343,7 +492,11 @@ class Runner:
                     }
                     break
                 for call in calls:
-                    if self.stop_event.is_set() or time.monotonic() >= deadline:
+                    if (
+                        self.stop_event.is_set()
+                        or self.run_stop.is_set()
+                        or time.monotonic() >= deadline
+                    ):
                         raise RuntimeError("Stopped or wall time budget reached")
                     call_id = call.get("id")
                     if not isinstance(call_id, str) or not call_id:
@@ -354,7 +507,7 @@ class Runner:
                         )
                     seen_calls.add(call_id)
                     name = call.get("function", {}).get("name", "")
-                    self.api.request("POST", prefix + "/renew", json=lease)
+                    renew_current()
                     # Persist intent before executing. No automatic replay after a crash.
                     try:
                         args = json.loads(call["function"]["arguments"])
@@ -368,7 +521,55 @@ class Runner:
                         workspace.command_timeout = min(
                             120, max(0.01, deadline - time.monotonic())
                         )
-                        observation = workspace.execute(name, args)
+                        if (
+                            name in {"aios_recall", "aios_progress"}
+                            and self.protocol_version == 3
+                        ):
+                            if not isinstance(args, dict):
+                                raise ValueError("Invalid tool arguments")
+                            if name == "aios_recall":
+                                if (
+                                    set(args) != {"query"}
+                                    or not isinstance(args["query"], str)
+                                    or not 1 <= len(args["query"]) <= 600
+                                ):
+                                    raise ValueError(
+                                        "Recall requires a query of 1–600 characters"
+                                    )
+                                observation = workspace.clean(
+                                    self.api.request(
+                                        "POST",
+                                        v3_prefix + "/recall",
+                                        json={**lease, **args},
+                                    )
+                                )
+                                if len(json.dumps(observation)) > 22000:
+                                    artifact = str(uuid4()) + ".json"
+                                    (workspace.artifacts / artifact).write_text(
+                                        json.dumps(observation)
+                                    )
+                                    observation = {
+                                        "status": observation.get("status"),
+                                        "truncated": True,
+                                        "artifact_id": artifact,
+                                        "output_excerpt": json.dumps(observation)[
+                                            :12000
+                                        ],
+                                    }
+                            else:
+                                if (
+                                    set(args) != {"kind", "summary"}
+                                    or args["kind"] not in ("progress", "blocked")
+                                    or not isinstance(args["summary"], str)
+                                    or not 1 <= len(args["summary"]) <= 1000
+                                ):
+                                    raise ValueError(
+                                        "Progress requires kind and a summary of 1–1000 characters"
+                                    )
+                                progress(args["kind"], args["summary"])
+                                observation = {"reported": True}
+                        else:
+                            observation = workspace.execute(name, args)
                     except (ValueError, KeyError, OSError, UnicodeError) as exc:
                         observation = {"error": workspace.redact(str(exc))[:1000]}
                     self.journal.event(
@@ -396,6 +597,19 @@ class Runner:
                     )
             else:
                 raise RuntimeError("Assignment model step budget reached")
+            try:
+                progress(
+                    "progress",
+                    "Host verification ended: " + result["evidence"]["status"],
+                )
+            except Exception:
+                self.journal.event(
+                    rid,
+                    "delivery_pending",
+                    {
+                        "message": "Verification milestone queued; preserving verification result"
+                    },
+                )
             check_summary = [
                 {
                     k: check.get(k)
@@ -447,25 +661,47 @@ class Runner:
                     },
                 )
         except Exception as exc:
-            status = "interrupted" if self.stop_event.is_set() else "failed"
+            # A context/observation rejection can race link revocation. Renewal remains
+            # available to discover cancellation, even when no more observations are allowed.
+            if self.protocol_version == 3 and not cancelled.is_set():
+                try:
+                    renew_current()
+                except Exception:
+                    pass
+            status = (
+                "cancelled"
+                if cancelled.is_set()
+                else ("interrupted" if self.run_stop.is_set() else "failed")
+            )
             result = {
                 "error": workspace.redact(str(exc))[:1000],
                 "verification": "unverified",
             }
             self.last_error = result["error"]
+            if not self.run_stop.is_set():
+                try:
+                    progress("blocked", result["error"])
+                except Exception:
+                    pass
         finally:
             workspace.stop()
             lease_stop.set()
             renewer.join(timeout=46)
-            self.journal.finish(rid, status, result)
-            self.journal.queue(
-                "finish:" + rid,
+            if cancelled.is_set():
+                status = "cancelled"
+            # Final local state and pending delivery must survive the same crash boundary.
+            self.journal.finish(
                 rid,
-                prefix + "/finish",
-                {**lease, "status": status, "result": result},
+                status,
+                result,
+                report_path=prefix + "/finish",
+                report={**lease, "status": status, "result": result},
             )
             try:
                 self.journal.flush(self.api)
+                self.sync_events(
+                    next(m for m in self.journal.claims() if m["run_id"] == rid)
+                )
             except Exception:
                 self.journal.event(
                     rid,

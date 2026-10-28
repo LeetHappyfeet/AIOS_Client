@@ -37,7 +37,13 @@ printed loopback URL.
    and paths to preserve, then choose **Run task**. **Listen for AIOS work**
    polls for operator assignments sent through the workspace API. Use **Stop** to cancel.
 
-The AIOS server needs matching **protocol v2** support and both workspace migrations.
+The client supports **protocol v2 and v3**, preferring v3 when AIOS advertises its
+supported version and all v3 capabilities. For linked environments apply the v3
+server migration as well. See the [v3 integration and delegation proposal](docs/v3-integration.md)
+for pairing, outbound listening, recovery, and the proposed server-side automatic
+delegation service. This update changes AIOS_Client only.
+
+Legacy standalone work needs protocol v2 support and both workspace migrations.
 Upgrade server and client together. Cancel/resubmit queued v1 assignments with explicit
 criteria; they have no v2 assignment hash and will not execute.
 Set `AIOS_WORKSPACE_API_KEY` on that server. Configure its value in the client's AIOS
@@ -81,6 +87,9 @@ timeout to return; owned commands are terminated when cancellation is observed.
 
 ## Coding behavior and records
 
+V3 adds `aios_recall(query)` for permitted character recall during execution and
+`aios_progress(kind, summary)` for milestones or blocked reasons.
+
 Tools: list/search files, read line ranges with SHA-256, exact single-occurrence edits,
 start/read/stop commands, Git status and diff. Edits reject stale hashes and ambiguous
 matches. Reads/searches are bounded and skip common dependency directories. Ordinary commands
@@ -103,7 +112,9 @@ keep this state directory private. Stop the client before backing it up. Per-com
 capture is bounded; retention across runs is manual in this pass.
 
 A process-start record is saved before execution. After a crash, an unfinished run is
-marked interrupted and commands are never replayed automatically. Inspect its journal,
+marked interrupted and commands are never replayed automatically. V3 claims persist
+their lease, assignment hash, report outbox, and event cursor; recovery can report
+interruption without restarting execution. Inspect its journal,
 processes and files before submitting another task. Pending notifications keep stable
 event IDs for retries. A lost lease interrupts the assignment; it is never automatically
 requeued. If assignment submission times out, its request ID is in the journal and can
