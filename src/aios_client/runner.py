@@ -396,6 +396,32 @@ class Runner:
                     )
             else:
                 raise RuntimeError("Assignment model step budget reached")
+            check_summary = [
+                {
+                    k: check.get(k)
+                    for k in (
+                        "id",
+                        "exit_code",
+                        "timed_out",
+                        "cancelled",
+                        "output_complete",
+                        "log_sha256",
+                    )
+                }
+                for check in result["evidence"]["checks"]
+            ]
+            verification_text = (
+                "Workspace host verification: "
+                + result["evidence"]["status"]
+                + ". Required check results: "
+                + json.dumps(check_summary)
+                + ". Protected-path violations: "
+                + json.dumps(result["evidence"]["violations"])
+                + ". Output expectations met: "
+                + str(all(o["passed"] for o in result["evidence"]["outputs"]))
+                + "\nWorker report (unverified prose): "
+                + result["report"]
+            )
             try:
                 self._deliver(
                     rid,
@@ -403,10 +429,11 @@ class Runner:
                     {
                         **lease,
                         "event_key": str(uuid4()),
-                        "text": "Workspace final worker report: " + result["report"],
+                        "text": verification_text,
                         "payload": {
                             "verification": "worker_evidence",
                             "status": result["evidence"]["status"],
+                            "checks": check_summary,
                             "manifest_sha256": result["evidence"]["manifest_sha256"],
                         },
                     },

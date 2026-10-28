@@ -411,6 +411,7 @@ def test_final_model_claim_never_overrides_host_verification(
         }
     )
     receipts = []
+    observations = []
 
     def api(request):
         body = json.loads(request.content) if request.content else {}
@@ -423,6 +424,8 @@ def test_final_model_claim_never_overrides_host_verification(
                     "text": "identity",
                 },
             )
+        if request.url.path.endswith("/observe"):
+            observations.append(body)
         if request.url.path.endswith("/finish"):
             receipts.append(body)
         return httpx.Response(200, json={"ok": True})
@@ -459,5 +462,8 @@ def test_final_model_claim_never_overrides_host_verification(
         )
         assert receipts[0]["result"]["evidence"]["status"] == expected
         assert receipts[0]["status"] != "succeeded"
+        assert observations[-1]["text"].startswith(
+            "Workspace host verification: " + expected
+        )
     finally:
         runner.close()
