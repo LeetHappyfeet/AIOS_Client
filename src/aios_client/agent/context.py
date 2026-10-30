@@ -48,13 +48,12 @@ class RepositoryInstructions:
         for key in ("path", "cwd", "destination"):
             if isinstance(arguments.get(key), str) and arguments[key]:
                 self.inspect(arguments[key])
-        for edit in (
-            arguments.get("edits", [])
-            if isinstance(arguments.get("edits"), list)
-            else []
-        ):
-            if isinstance(edit, dict):
-                self.for_tool(edit)
+        for key in ("edits", "reads"):
+            for item in (
+                arguments.get(key, []) if isinstance(arguments.get(key), list) else []
+            ):
+                if isinstance(item, dict):
+                    self.for_tool(item)
 
 
 class WorkingContext:
@@ -128,7 +127,14 @@ class WorkingContext:
                     "arguments": {
                         k: v
                         for k, v in args.items()
-                        if k in ("path", "cwd", "process_id", "cursor", "artifact_id")
+                        if k
+                        in (
+                            "path",
+                            "cwd",
+                            "process_id",
+                            "cursor",
+                            "artifact_id",
+                        )
                     },
                     "result": {
                         k: result[k]
@@ -138,6 +144,8 @@ class WorkingContext:
                             "exit_code",
                             "process_id",
                             "next_cursor",
+                            "remaining",
+                            "wait_reason",
                             "artifact_id",
                             "sha256",
                             "edited",

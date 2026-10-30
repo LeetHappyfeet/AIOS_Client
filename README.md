@@ -6,25 +6,40 @@ task summaries and verification evidence to AIOS. It is a background client with
 
 ## Install and configure
 
-Python 3.11+, Git, and an existing development workspace are required. Linux is the
-primary target; Windows process support and CI are included. Run under an
-ordinary account inside a dedicated development VM or container. Shell commands have
-that account's permissions: workspace file checks are not a shell sandbox.
+For Ubuntu, use the [installer and remote UI guide](docs/installation.md). Run as the
+ordinary account that will own the client (for example `aiosagent`):
 
 ```bash
-git clone https://github.com/LeetHappyfeet/AIOS_Client.git
+git clone --branch main https://github.com/LeetHappyfeet/AIOS_Client.git
 cd AIOS_Client
+bash install.sh --remote-url http://192.168.1.161:8765
+~/.local/bin/aios-client setup
+```
+
+Replace the example address with your VM IP. The installer handles Python >=3.11
+(including a user-local Python 3.12 when Ubuntu has 3.10), creates `.venv`, installs a
+launcher and saves UI settings. Open the printed URL from another computer and log in
+as **admin** with the UI password chosen during installation. Use `--local-only` for
+loopback setup, or `--service` for an optional systemd user UI service. Remote access
+requires authentication. Use HTTPS or a VPN on untrusted networks; see the guide for
+certificates and firewall details. `main` includes the headless credentials, v3 worker, reporting/logging and
+workspace inspection tools; no manual cherry-picking is needed.
+
+For a manual installation, Python 3.11+, Git and a development workspace are required:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
 aios-client setup
 ```
 
-On Windows activate with `.venv\Scripts\Activate.ps1` in PowerShell. Open the printed
-`http://127.0.0.1:8765` URL on the same machine. The setup server binds only to loopback,
-checks its Host/Origin, and requires a per-process token for changes. It is not intended
-as a remotely exposed control panel. Use an SSH tunnel if necessary, preserving the
-printed loopback URL.
+Manual setup remains loopback-only by default. On Windows activate with
+`.venv\Scripts\Activate.ps1`. To enable remote access, run `aios-client configure-ui
+--host 0.0.0.0 --public-url http://VM_IP:8765` and choose a password. All routes require
+that login; Host/Origin checks and per-process change tokens still apply. Settings
+persist for future `setup` launches. Shell commands have the account's permissions;
+workspace file checks are not a shell sandbox.
 
 1. Save an **AIOS connection**: host/IP, port, HTTP/HTTPS and optional base path.
 2. Save a **generation endpoint**: complete base URL (usually ending in `/v1`), model ID,
@@ -156,7 +171,8 @@ The client owns a native model/tool session with a strict shared tool registry,
 local plans, repository `AGENTS.md` guidance, bounded working-context compaction,
 and durable checkpoints. It now supports batch file edits, file moves/deletion,
 argument-array commands, explicit shell selection, queued stdin/EOF, artifact reads,
-and richer Git inspection. The existing v2/v3 assignment and verification contracts
+richer Git inspection, paginated literal/regex search, multiple-file reads under a
+shared budget, and bounded process waits. The existing v2/v3 assignment and verification contracts
 remain in place. See [coding runtime and the next system-work pass](docs/coding-runtime.md)
 for tool inputs, recovery limits, and the Windows/Linux terminal adapter roadmap.
 
@@ -165,8 +181,8 @@ for tool inputs, recovery limits, and the Windows/Linux terminal adapter roadmap
 V3 adds `aios_recall(query)` for permitted character recall during execution and
 `aios_progress(kind, summary)` for milestones or blocked reasons.
 
-Tools: list/search files, read line ranges with SHA-256, exact single-occurrence edits,
-start/read/stop commands, Git status and diff. Edits reject stale hashes and ambiguous
+Tools: paginated file discovery and literal/regex search, single/batch line reads with
+SHA-256, exact and batched edits, start/read/wait/write/stop commands, Git status/diff/show. Edits reject stale hashes and ambiguous
 matches. Reads/searches are bounded and skip common dependency directories. Ordinary commands
 have a 120-second deadline (or the remaining assignment budget) and an 8 MiB output capture cap; they keep draining output
 when capture is full. Four subprocesses per run are allowed. Git diffs are also bounded.

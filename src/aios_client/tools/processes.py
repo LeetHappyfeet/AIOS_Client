@@ -69,6 +69,7 @@ class ProcessTools:
             "log": log,
             "truncated": False,
             "done": threading.Event(),
+            "changed": threading.Condition(),
             "timed_out": False,
             "cancelled": False,
             "command": command,
@@ -145,6 +146,8 @@ class ProcessTools:
                         captured = data[:remaining]
                         f.write(captured)
                         f.flush()
+                        with record["changed"]:
+                            record["changed"].notify_all()
                         size += len(captured)
                         output = decoder.decode(captured)
                         if output:
@@ -214,6 +217,8 @@ class ProcessTools:
                     record["journal_error"] = self.redact(str(exc))[:500]
                 finally:
                     record["done"].set()
+                    with record["changed"]:
+                        record["changed"].notify_all()
 
         command_timeout = min(
             self.command_timeout, timeout_seconds or self.command_timeout
@@ -262,6 +267,34 @@ class ProcessTools:
             "input_error": r["input_error"],
             "stdin_closed": r["input_closed"],
         }
+
+    def wait_process(
+        self,
+        process_id: str,
+        cursor: Annotated[int, Field(ge=0)] = 0,
+        wait_seconds: Annotated[float, Field(ge=0, le=30)] = 10,
+    ):
+        record = self.processes[process_id]
+        # The session caps command_timeout to its remaining assignment wall time.
+        deadline = time.monotonic() + min(wait_seconds, self.command_timeout)
+        reason = "wait_timeout"
+        with record["changed"]:
+            while True:
+                if self.cancelled.is_set():
+                    reason = "workspace_stopped"
+                    break
+                size = record["log"].stat().st_size if record["log"].exists() else 0
+                if size > cursor:
+                    reason = "output"
+                    break
+                if record["done"].is_set():
+                    reason = "completed"
+                    break
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    break
+                record["changed"].wait(min(remaining, 0.1))
+        return {**self.read_process(process_id, cursor), "wait_reason": reason}
 
     def stop_process(self, process_id: str, timed_out: bool = False):
         record = self.processes[process_id]
@@ -349,6 +382,7 @@ def register(registry, processes):
     for name, description in {
         "run_command": "Start a workspace command or argv process. Select an available shell; follow its process handle",
         "read_process": "Read bounded UTF-8 output by byte cursor, exit status, cancellation and input status",
+        "wait_process": "Wait up to 30 seconds for output or completion, then read from cursor; wait timeout is not command failure",
         "write_process": "Queue bounded UTF-8 stdin; optionally close stdin. Queued does not mean delivered",
         "stop_process": "Stop an owned process and its child group",
         "process_status": "List owned process handles and observed lifecycle states",

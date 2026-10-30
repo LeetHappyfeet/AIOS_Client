@@ -52,7 +52,7 @@ This pass changes only the client; it builds on the v3 worker integration.
 | `agent/context.py` | Immutable assignment, repository guidance, working history, bounded receipt compaction |
 | `agent/tasks.py` | Local plans and explicit blocked state |
 | `tools/registry.py` | Generate schemas from typed handlers; strictly validate arguments and dispatch tools |
-| `tools/files.py` | Discovery, literal search, bounded reads and hash-checked edits |
+| `tools/files.py` | Paginated discovery/search, bounded single/batch reads and hash-checked edits |
 | `tools/processes.py` | Owned process handles, stdin queues, bounded output, timeouts, lifecycle receipts |
 | `tools/platforms.py` | OS process launch, shell selection, capability reporting and process-tree stopping |
 | `tools/git.py` | Read-only Git inspection using argument arrays through the process backend |
@@ -78,15 +78,17 @@ execution loop rather than being mistaken for successful tool observations.
 
 | Tool | Main inputs / behavior |
 |---|---|
-| `list_files` | Existing bounded file listing |
-| `find_files` | Workspace-relative glob, directory and result limit |
-| `search_files` | Literal query, directory, glob, case sensitivity and result limit |
-| `read_file` | Path, line range, original byte SHA-256 |
+| `list_files` | Bounded file listing with optional continuation cursor |
+| `find_files` | Workspace-relative glob, directory, result/scan limits and continuation cursor |
+| `search_files` | One query or up to 16 OR queries; literal/regex, whole words, case, glob, context, matches/files/count modes and pagination |
+| `read_file` | Path, line range, original byte SHA-256 and explicit line-text truncation |
+| `read_files` | Up to 20 path/ranges with shared line/character budgets, hashes and remaining ranges |
 | `apply_patch` | Existing exact single replacement or file creation with expected hash |
 | `apply_edits` | Batch of `replace`, `create`, `delete` or `move` entries |
 | `delete_file`, `move_file` | Convenience operations requiring the source hash; move destination must be absent |
 | `run_command` | Exactly one of shell command text or an argument array; explicit cwd, shell, stdin and optional timeout |
 | `read_process` | Process handle and byte cursor; output, exit code, timeout/cancellation and input state |
+| `wait_process` | Process handle, byte cursor and wait duration (0–30 seconds); returns on output, completion, cancellation or wait timeout |
 | `write_process` | Bounded UTF-8 input queued to an opted-in stdin pipe; optional EOF |
 | `stop_process` | Stop an owned process tree |
 | `process_status` | Inspect all retained handles from this execution |
@@ -96,6 +98,67 @@ execution loop rather than being mistaken for successful tool observations.
 | `update_plan` | Local steps with stable IDs and pending/in_progress/completed/blocked status |
 | `task_blocked` | Stop execution, stop owned commands and report a missing prerequisite or clarification |
 | `aios_recall`, `aios_progress` | Existing v3 leased knowledge retrieval and milestones |
+
+### Search, batch reads and waiting
+
+Searches accept one string or a list of strings in `query`; the list is an OR
+search and each matching line appears once. `regex_mode` defaults to false.
+`whole_word` adds Unicode word boundaries. `context_lines` includes up to five
+lines on either side. For example:
+
+```json
+{"query":["/observe","tool_result","self.observe"],"pattern":"**/*.py","context_lines":2}
+```
+
+`mode: "files"` returns matching paths once; `mode: "count"` returns per-file
+**matching-line counts**, not occurrences. `total_matches` describes only the
+current page (matching files in files mode, matching lines otherwise). A count
+page stopped mid-file marks that entry `partial: true`; add that path's counts
+across pages. Empty/skipped files are not count entries.
+
+Discovery and search return `next_cursor`. Reissue the same tool and search
+options with that cursor until it is null, even if a page has no results.
+Result and scan limits may change between pages. The scan budget defaults to
+5000 files **per page**, rather than a permanent repository ceiling. Searches
+also yield after roughly two seconds; a single regex match is limited to 50 ms
+using the `regex` dependency. Invalid or excessive expressions return an error.
+The final page may be empty when the previous page ended exactly at a limit.
+Common dependency directories, symlinks and secret env files remain excluded;
+search skips files over 1 MiB and invalid UTF-8, with per-page skipped counts.
+
+Cursors belong to this workspace execution; the most recent 128 are retained.
+They are not durable snapshots or transferable between runs. Restart searches
+after adding, deleting or renaming files. A changed file being resumed mid-file
+is rejected by its byte hash. Large results still use retained artifacts, while
+the continuation cursor and scan/count metadata remain visible in the receipt.
+
+```json
+{"reads":[{"path":"src/caller.py","start":20,"end":90},{"path":"src/handler.py"}],"max_lines":300,"max_chars":12000}
+```
+
+`read_files` shares a default 400-line / 12000-character budget (maximum 18000
+characters) across the batch. `max_chars` measures the serialized `files` array,
+including hashes and line metadata, before credential redaction; the outer
+receipt/remaining-range metadata is bounded separately by the normal artifact
+mechanism. Each range retains the existing 200-line per-read and 2 MiB file
+limits. Use the returned `remaining` array as the next `reads` input. File errors
+are reported per entry; invalid scopes/ranges reject the batch. Lines clip at
+1000 text characters, or less to fit the shared budget, and explicitly mark
+`text_truncated`. Use a command to inspect longer line content. Nested repository
+instructions load for every requested path before later edits/commands.
+
+After `run_command`, prefer `wait_process` to repeated immediate polls:
+
+```json
+{"process_id":"<handle>","cursor":0,"wait_seconds":10}
+```
+
+Continue with the returned byte cursor. `wait_reason` distinguishes `output`,
+`completed`, `workspace_stopped` and `wait_timeout`. A wait timeout does not stop
+the process or mark the command timed out. Waiting is capped by the remaining
+assignment wall time and responds to local cancellation. Exit status and output
+completion retain their existing meaning; inspect those before claiming success.
+No new AIOS endpoints or raw tool-result ingestion are introduced.
 
 Example batch:
 

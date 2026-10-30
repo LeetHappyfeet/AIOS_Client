@@ -1,6 +1,6 @@
 # AIOS v3 integration and development proposal
 
-This branch updates AIOS_Client only. It uses the existing AIOS API documented at
+This integration updates AIOS_Client only. It uses the existing AIOS API documented at
 [AIOS revision 7a89d91](https://github.com/LeetHappyfeet/AIOS/blob/7a89d9133a96080796f49cd7117c6f03acffbb97/docs/workspace-client.md#concurrent-character-environments-first-pass-protocol-v3-capabilities).
 Automatic character delegation remains a proposed AIOS server change.
 
@@ -28,8 +28,10 @@ Automatic character delegation remains a proposed AIOS server change.
    always requires v3. Pairing fields record operator configuration; editing them
    does not create links, grant memory access, or change the binding in AIOS.
 5. Run `aios-client serve --agent "Cortana workspace"`, or choose **Listen for AIOS
-   work**. The CLI needs no inbound listener. The optional setup page is loopback
-   only. Polling is outbound every two seconds while idle and works behind NAT.
+   work**. The worker CLI needs no inbound listener. The optional setup page is
+   loopback-only by default, or available remotely with its own login using the
+   [installer](installation.md). Polling is outbound every two seconds while idle
+   and works behind NAT.
 6. From the operator environment submit to
    `/workspace-client/v3/{binding_id}/links/{link_id}/submit`. Include the ordinary
    immutable assignment, request UUID, and exact current origin `source_node_id`.
@@ -141,8 +143,7 @@ online, has a compiler, or has permission to deploy.
 
 The execution client should stay a bounded worker. That lets automatic server
 submission use the same queue without another client transport or inbound server.
-For rollout, keep this development branch, test with a disposable AIOS installation
-and scripted model, then test a real model and inspect retained evidence before
-merging. The unit/integration suite mocks AIOS HTTP and model responses; it does not
+For rollout, test `main` with a disposable AIOS installation and scripted model,
+then test a real model and inspect retained evidence before using it for important work. The unit/integration suite mocks AIOS HTTP and model responses; it does not
 claim live server, production recall, or remote attestation validation.
 
