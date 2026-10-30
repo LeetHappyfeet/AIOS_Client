@@ -5,6 +5,16 @@ import json
 import httpx
 
 
+class APIError(RuntimeError):
+    def __init__(self, status, method, path):
+        self.status = status
+        super().__init__(f"API returned HTTP {status} for {method} {path}")
+
+
+class APIUnavailable(RuntimeError):
+    pass
+
+
 class API:
     def __init__(self, url: str, key: str = "", timeout: float = 30, transport=None):
         self.key = key
@@ -28,11 +38,9 @@ class API:
             return r.json()
         except httpx.HTTPStatusError as exc:
             # Do not log arbitrary response bodies (providers can echo credentials/prompts).
-            raise RuntimeError(
-                f"API returned HTTP {exc.response.status_code} for {method} {path}"
-            ) from None
+            raise APIError(exc.response.status_code, method, path) from None
         except (httpx.HTTPError, json.JSONDecodeError):
-            raise RuntimeError(
+            raise APIUnavailable(
                 f"API connection or JSON response failed for {method} {path}"
             ) from None
 

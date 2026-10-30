@@ -226,6 +226,8 @@ def verify(workspace, spec, baseline, stop_event, deadline):
         "violations": path_summary(violations),
         "stale": stale,
         "snapshot_scope": {
+            "root": str(workspace.root),
+            "outside_workspace_observed": False,
             "excluded_directories": sorted(IGNORED),
             "explicit_includes": getattr(workspace, "snapshot_includes", []),
         },
