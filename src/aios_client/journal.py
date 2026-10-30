@@ -23,8 +23,58 @@ class Journal:
             CREATE TABLE IF NOT EXISTS outbox(id TEXT PRIMARY KEY, run TEXT, path TEXT, body TEXT);
             CREATE TABLE IF NOT EXISTS claims(run TEXT PRIMARY KEY, body TEXT, cursor INTEGER DEFAULT 0);
             CREATE TABLE IF NOT EXISTS session_state(run TEXT PRIMARY KEY, body TEXT, updated REAL);
+            CREATE TABLE IF NOT EXISTS deliveries(
+              id TEXT PRIMARY KEY, run TEXT, path TEXT, payload_bytes INTEGER,
+              attempts INTEGER DEFAULT 0, failures INTEGER DEFAULT 0,
+              state TEXT DEFAULT 'pending');
         """)
+        # Upgrade retained notifications without losing their stable delivery IDs.
+        for key, run, path, body in self.db.execute(
+            "SELECT id,run,path,body FROM outbox"
+        ).fetchall():
+            self._track_delivery(key, run, path, json.loads(body))
         self.db.commit()
+
+    def _track_delivery(self, key, run, path, body):
+        size = len(
+            json.dumps(
+                body, ensure_ascii=False, separators=(",", ":"), allow_nan=False
+            ).encode("utf-8")
+        )
+        self.db.execute(
+            "INSERT OR IGNORE INTO deliveries(id,run,path,payload_bytes) VALUES(?,?,?,?)",
+            (key, run, path, size),
+        )
+
+    def delivery_summary(self, run):
+        """Durable report delivery counts; acknowledgements do not prove ingestion."""
+        with self.lock:
+            rows = self.db.execute(
+                "SELECT path,payload_bytes,attempts,failures,state FROM deliveries WHERE run=?",
+                (run,),
+            ).fetchall()
+        summary = {
+            "reports": len(rows),
+            "acknowledged": 0,
+            "pending": 0,
+            "rejected": 0,
+            "discarded": 0,
+            "attempts": 0,
+            "failed_attempts": 0,
+            "attempted_payload_bytes": 0,
+            "acknowledged_payload_bytes": 0,
+            "by_kind": {},
+        }
+        for path, size, attempts, failures, state in rows:
+            summary[state] += 1
+            summary["attempts"] += attempts
+            summary["failed_attempts"] += failures
+            summary["attempted_payload_bytes"] += size * attempts
+            if state == "acknowledged":
+                summary["acknowledged_payload_bytes"] += size
+            kind = path.rsplit("/", 1)[-1]
+            summary["by_kind"][kind] = summary["by_kind"].get(kind, 0) + 1
+        return summary
 
     def start(self, run, agent, task, metadata=None):
         with self.lock, self.db:
@@ -59,6 +109,7 @@ class Journal:
                 (status, json.dumps(result), time.time(), run),
             )
             if report_path is not None:
+                self._track_delivery("finish:" + run, run, report_path, report)
                 self.db.execute(
                     "INSERT INTO outbox VALUES(?,?,?,?)",
                     ("finish:" + run, run, report_path, json.dumps(report)),
@@ -76,6 +127,10 @@ class Journal:
                     "verification": "unverified",
                 }
                 # Recovery reports interruption; it never restarts model or shell operations.
+                report = {**m["lease"], "status": "interrupted", "result": result}
+                self._track_delivery(
+                    "finish:" + rid, rid, m["prefix"] + "/finish", report
+                )
                 self.db.execute(
                     "INSERT OR IGNORE INTO outbox VALUES(?,?,?,?)",
                     (
@@ -103,6 +158,7 @@ class Journal:
                 "INSERT OR IGNORE INTO outbox VALUES(?,?,?,?)",
                 (key, run, path, encoded),
             )
+            self._track_delivery(key, run, path, body)
 
     def discard_tool_observations(self):
         """Drop obsolete raw-tool uploads on upgrade; retain summaries and finishes."""
@@ -118,6 +174,9 @@ class Journal:
                     and payload.get("tool")
                 ):
                     self.db.execute("DELETE FROM outbox WHERE id=?", (key,))
+                    self.db.execute(
+                        "UPDATE deliveries SET state='discarded' WHERE id=?", (key,)
+                    )
                     count += 1
         return count
 
@@ -131,6 +190,11 @@ class Journal:
                 "SELECT id,run,path,body FROM outbox ORDER BY rowid"
             ).fetchall()
         for key, run, path, body in rows:
+            with self.lock, self.db:
+                self.db.execute(
+                    "UPDATE deliveries SET attempts=attempts+1 WHERE id=?", (key,)
+                )
+            state = "acknowledged"
             try:
                 response = api.request("POST", path, json=json.loads(body))
                 if (
@@ -142,6 +206,10 @@ class Journal:
                 ):
                     self.finish(run, response["status"], response["result"])
             except APIError as exc:
+                with self.lock, self.db:
+                    self.db.execute(
+                        "UPDATE deliveries SET failures=failures+1 WHERE id=?", (key,)
+                    )
                 if exc.status != 409 or not path.endswith(("/observe", "/progress")):
                     raise
                 status_path = path.rsplit("/", 1)[0].replace(
@@ -158,7 +226,17 @@ class Journal:
                 self.event(
                     run, "report_rejected", {"path": path, "reason": "Run stopped"}
                 )
+                state = "rejected"
+            except Exception:
+                with self.lock, self.db:
+                    self.db.execute(
+                        "UPDATE deliveries SET failures=failures+1 WHERE id=?", (key,)
+                    )
+                raise
             with self.lock, self.db:
+                self.db.execute(
+                    "UPDATE deliveries SET state=? WHERE id=?", (state, key)
+                )
                 self.db.execute("DELETE FROM outbox WHERE id=?", (key,))
 
     def claims(self):
@@ -240,4 +318,3 @@ class Journal:
                 {"id": r[0], "kind": r[1], "body": json.loads(r[2])}
                 for r in reversed(rows)
             ]
-

@@ -1,5 +1,43 @@
 # Coding runtime and the next system-work pass
 
+## Run diagnostics and verification scope
+
+Plain workspaces are supported. Git inspection detects a non-repository once per
+run and returns `is_repository: false`, `status: skipped`, and `head: null`.
+Missing Git is reported separately from repository absence; unexpected probe
+failures remain failures. An initialized repository without commits has
+`head_status: unborn`. Error output is never stored as a commit identifier.
+
+The run lifecycle status `finished` means execution ended. `evidence.status`
+describes only the immutable assignment's configured checks, output expectations,
+and workspace snapshot. Results and final observations explicitly label
+`task_outcome: not_independently_verified`. For example, a JSON structure check
+that permits `outcome: blocked` may pass while the requested work is blocked.
+Use task-specific acceptance checks to verify the behavior you actually require.
+The snapshot names its root and exclusions; it does not observe writes elsewhere
+on the host or establish network isolation.
+
+Shell checks must preserve the failure status of the operation under test. Prefer
+an argv script with assertions, or explicit error propagation. A trailing
+successful `echo`, cleanup command, or pipeline can hide an earlier failure.
+The model instructions explain this; the host preserves assigned command text
+and does not rewrite arbitrary shell programs or treat their exit status as
+proof of every intermediate step.
+
+Local activity logs include absolute resolved working directories and concise
+tool receipts (paths, edit hashes, process status, artifact IDs). Terminal newlines
+no longer create artificial empty records. Full process output and session traces
+remain local, with existing redaction and retention behavior.
+
+Each completed run logs a durable `delivery_summary`: unique report counts by
+kind (`observe`, `progress`, `finish`), attempts, failed attempts, acknowledged,
+pending, rejected and discarded reports, and serialized payload bytes. Retries
+retain stable delivery IDs and counters across restarts. Byte counts cover JSON
+request bodies, exclude headers, and count each attempt separately. An API
+acknowledgement does not prove downstream memory ingestion. These counters cover
+report notifications, not lease renewals, context/recall requests, or model traffic.
+The summary is local and does not generate an additional AIOS memory observation.
+
 AIOS_Client owns the local model/tool loop. AIOS provides the immutable assignment,
 identity/recall context, lease, cancellation, and result endpoints. It does not need
 to interpret file edits, terminal output, or the model's intermediate coding steps.

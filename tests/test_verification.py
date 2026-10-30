@@ -81,6 +81,8 @@ def test_new_deleted_and_modified_files_are_in_manifest(tmp_path):
     }
     assert manifest["final"]["entries"]["new.txt"]["sha256"]
     assert result["checks"][0]["log_sha256"]
+    assert result["snapshot_scope"]["root"] == str(w.root)
+    assert result["snapshot_scope"]["outside_workspace_observed"] is False
 
 
 @pytest.mark.parametrize(

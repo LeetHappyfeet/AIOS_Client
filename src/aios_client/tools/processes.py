@@ -62,7 +62,8 @@ class ProcessTools:
             if k not in {"AIOS_WORKSPACE_REVIEW_KEY", "AIOS_WORKSPACE_OPERATOR_KEY"}
             and not any(s in v for s in self.secrets)
         }
-        p = self.backend.launch(command, argv, shell, self.path(cwd), env, stdin)
+        resolved_cwd = self.path(cwd).resolve(strict=True)
+        p = self.backend.launch(command, argv, shell, resolved_cwd, env, stdin)
         record = {
             "p": p,
             "log": log,
@@ -74,6 +75,7 @@ class ProcessTools:
             "argv": argv,
             "shell": shell,
             "cwd": cwd,
+            "resolved_cwd": str(resolved_cwd),
             "started_at": time.time(),
             "ended_at": None,
             "stdin_enabled": stdin,
@@ -93,6 +95,7 @@ class ProcessTools:
                         "argv": argv,
                         "shell": shell,
                         "cwd": cwd,
+                        "resolved_cwd": str(resolved_cwd),
                         "stdin": stdin,
                         "artifact_id": log.name,
                         "started_at": record["started_at"],
@@ -145,12 +148,18 @@ class ProcessTools:
                         size += len(captured)
                         output = decoder.decode(captured)
                         if output:
-                            self.on_event("process_output", {"process_id": pid, "output": output})
+                            self.on_event(
+                                "process_output", {"process_id": pid, "output": output}
+                            )
                         if len(data) > remaining and not record["truncated"]:
                             record["truncated"] = True
-                            self.on_event("process_output_truncated", {
-                                "process_id": pid, "capture_limit": self.capture_limit,
-                            })
+                            self.on_event(
+                                "process_output_truncated",
+                                {
+                                    "process_id": pid,
+                                    "capture_limit": self.capture_limit,
+                                },
+                            )
 
                     while chunk := p.stdout.read1(4096):
                         pending += chunk
@@ -160,7 +169,9 @@ class ProcessTools:
                         # flushed prompt must be visible before the process exits.
                         keep = 0
                         for secret in patterns:
-                            for length in range(min(len(secret) - 1, len(pending)), 0, -1):
+                            for length in range(
+                                min(len(secret) - 1, len(pending)), 0, -1
+                            ):
                                 if pending.endswith(secret[:length]):
                                     keep = max(keep, length)
                                     break
@@ -170,7 +181,9 @@ class ProcessTools:
                     emit(pending)
                     tail = decoder.decode(b"", final=True)
                     if tail:
-                        self.on_event("process_output", {"process_id": pid, "output": tail})
+                        self.on_event(
+                            "process_output", {"process_id": pid, "output": tail}
+                        )
                 p.wait()
             finally:
                 p.stdout.close()
@@ -321,6 +334,7 @@ class ProcessTools:
                         "argv": r["argv"],
                         "shell": r["shell"],
                         "cwd": r["cwd"],
+                        "resolved_cwd": r["resolved_cwd"],
                         "timed_out": r["timed_out"],
                         "cancelled": r["cancelled"],
                         "artifact_id": r["log"].name,
@@ -357,4 +371,3 @@ def register(registry, processes):
             "workspace.processes",
             effect=effect,
         )
-

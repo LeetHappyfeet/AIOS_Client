@@ -46,8 +46,44 @@ class ActivityLog:
             value = value.replace(secret, "[REDACTED]")
         prefix = f"[agent={terminal_text(self.agent)} run={run}] {kind}"
         with self.lock:
-            for line in terminal_text(value).split("\n"):
+            # A terminal newline ends the last line; it is not an extra empty record.
+            lines = terminal_text(value).split("\n")
+            if lines[-1] == "":
+                lines.pop()
+            for line in lines:
                 self.logger.info("%s %s", prefix, line)
+
+    def tool_result(self, run, name, call_id, observation):
+        """Show receipts without repeating file contents or command output."""
+        keys = (
+            "ok",
+            "error",
+            "path",
+            "edited",
+            "sha256",
+            "files",
+            "artifact_id",
+            "process_id",
+            "exit_code",
+            "timed_out",
+            "cancelled",
+            "truncated",
+            "complete",
+            "output_complete",
+            "next_cursor",
+            "status",
+            "is_repository",
+        )
+        detail = {k: observation[k] for k in keys if k in observation}
+        if isinstance(detail.get("files"), list) and len(detail["files"]) > 20:
+            detail["file_count"] = len(detail["files"])
+            detail["files"] = detail["files"][:20]
+            detail["files_truncated"] = True
+        self.write(
+            run,
+            "tool_result",
+            f"{name} call={call_id} " + json.dumps(detail, ensure_ascii=False),
+        )
 
     def process(self, run, kind, body):
         pid = body.get("process_id", "?")
