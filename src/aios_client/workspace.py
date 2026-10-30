@@ -117,7 +117,16 @@ class Workspace:
             (self.artifacts / artifact).write_text(encoded, encoding="utf-8")
             metadata = {
                 k: result[k]
-                for k in ("status", "knowledge_revision")
+                for k in (
+                    "status",
+                    "knowledge_revision",
+                    "next_cursor",
+                    "limit_reason",
+                    "scanned",
+                    "skipped",
+                    "total_matches",
+                    "count_scope",
+                )
                 if k in result
                 and isinstance(result[k], (str, int, float, bool, type(None)))
                 and len(str(result[k])) < 100

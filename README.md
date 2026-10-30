@@ -156,7 +156,8 @@ The client owns a native model/tool session with a strict shared tool registry,
 local plans, repository `AGENTS.md` guidance, bounded working-context compaction,
 and durable checkpoints. It now supports batch file edits, file moves/deletion,
 argument-array commands, explicit shell selection, queued stdin/EOF, artifact reads,
-and richer Git inspection. The existing v2/v3 assignment and verification contracts
+richer Git inspection, paginated literal/regex search, multiple-file reads under a
+shared budget, and bounded process waits. The existing v2/v3 assignment and verification contracts
 remain in place. See [coding runtime and the next system-work pass](docs/coding-runtime.md)
 for tool inputs, recovery limits, and the Windows/Linux terminal adapter roadmap.
 
@@ -165,8 +166,8 @@ for tool inputs, recovery limits, and the Windows/Linux terminal adapter roadmap
 V3 adds `aios_recall(query)` for permitted character recall during execution and
 `aios_progress(kind, summary)` for milestones or blocked reasons.
 
-Tools: list/search files, read line ranges with SHA-256, exact single-occurrence edits,
-start/read/stop commands, Git status and diff. Edits reject stale hashes and ambiguous
+Tools: paginated file discovery and literal/regex search, single/batch line reads with
+SHA-256, exact and batched edits, start/read/wait/write/stop commands, Git status/diff/show. Edits reject stale hashes and ambiguous
 matches. Reads/searches are bounded and skip common dependency directories. Ordinary commands
 have a 120-second deadline (or the remaining assignment budget) and an 8 MiB output capture cap; they keep draining output
 when capture is full. Four subprocesses per run are allowed. Git diffs are also bounded.
