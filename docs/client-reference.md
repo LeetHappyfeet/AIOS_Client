@@ -282,3 +282,27 @@ SQL tests. No production AIOS service or real model is contacted by the test sui
 Android/desktop control, interactive PTYs, automatic provisioning, multi-agent teamwork,
 and remote artifact download are later adapters/features.
 
+
+### Structured work results
+
+The existing execution loop returns a final JSON object with `outcome`
+(`completed`, `partial`, or `blocked`), `summary`, `evidence`, `limitations`,
+`artifacts`, and `requested_content`. Each requested content section has `label`
+and `text`; file text keeps its line breaks. A file path or a completion message
+is not a replacement for content the assignment asked to read.
+
+The host sends a bounded `result_summary` alongside the existing check evidence.
+This adds no model call and does not ingest individual tool results. Legacy prose
+still works. For existing experimental assignments, the host can extract the
+explicitly expected `aios-experiment-<request UUID>.json` report if its bytes match
+the final verification snapshot. It does not collect arbitrary JSON files or
+follow artifact paths from a model response. Findings remain worker claims.
+
+Structured reporting is limited to 18,000 encoded JSON characters and four content
+sections, with explicit content omission/truncation flags. The complete finish
+payload keeps the existing server limit of 60,000 encoded characters; check
+evidence takes priority over optional content. Source report files and the local
+execution journal retain original material. Submitted bounded results are
+available in AIOS operator request inspection. Older completed runs are displayed
+compactly by the updated AIOS HUD; requested content is prioritized for the latest
+completed result. Updating only the client cannot change an older server's HUD.

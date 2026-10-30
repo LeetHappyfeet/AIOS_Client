@@ -17,6 +17,7 @@ from .config import aios_url
 from .http import API, APIError, APIUnavailable, Model
 from .journal import Journal
 from .protocol import negotiate
+from .reporting import result_summary
 from .tools.recall import RemoteTools
 from .verification import bounded_text, snapshot, verify
 from .workspace import Workspace
@@ -33,7 +34,12 @@ Git inspection may be skipped in a plain workspace; do not initialize a reposito
 Preserve failure exit codes in shell probes. Prefer argv or a single script with assertions;
 do not append a successful echo or cleanup that hides failure of the operation being checked.
 Host check success means the configured commands passed, not independent proof of task completion.
-When finished, give a concise factual report of changes, verification, and unresolved issues.
+When finished, return a JSON object with outcome (completed, partial, or blocked), summary (string),
+evidence (list of concrete observations), limitations (list), artifacts (list of actual output paths),
+and requested_content (list of objects with label and text). Put the substantive answer in summary/evidence.
+If asked to read or print file contents, include that text with line breaks in requested_content;
+a completion announcement or file path is not a substitute. Report honestly if content is too large.
+This is the final response of this execution loop, not a request for another model pass.
 Use aios_recall to retrieve permitted character knowledge during work when available.
 Recall status unavailable or changed is not an empty search; preserve provenance and knowledge flags.
 Use aios_progress for meaningful milestones or blocked reasons, not every tool call.
@@ -477,6 +483,7 @@ class Runner:
             )
             result = {
                 "report": bounded_text(report, 6000),
+                "report_truncated": bounded_text(report, 6000) != report,
                 "verification": "worker_evidence",
                 "task_outcome": "not_independently_verified",
                 "verification_scope": "configured_checks_and_workspace_snapshot",
@@ -499,6 +506,20 @@ class Runner:
                 },
                 "goal_review": "pending" if spec.goal_id else "not_linked",
             }
+            structured = result_summary(workspace, spec, report)
+            if structured is not None:
+                # The server bounds the complete encoded result to 60,000
+                # characters. Preserve check evidence before optional content.
+                if len(json.dumps({**result, "result_summary": structured})) > 59000:
+                    structured = {
+                        "outcome": structured["outcome"],
+                        "summary": structured["summary"],
+                        "limitations": structured["limitations"][:1],
+                        "source": structured["source"],
+                        "transport_truncated": True,
+                    }
+                if len(json.dumps({**result, "result_summary": structured})) <= 60000:
+                    result["result_summary"] = structured
             try:
                 progress(
                     "progress",
