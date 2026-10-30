@@ -8,3 +8,4 @@ dist/
 client-data/
 client.json
 *.credentials/
+*.ui.json

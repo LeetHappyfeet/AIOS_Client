@@ -28,8 +28,10 @@ Automatic character delegation remains a proposed AIOS server change.
    always requires v3. Pairing fields record operator configuration; editing them
    does not create links, grant memory access, or change the binding in AIOS.
 5. Run `aios-client serve --agent "Cortana workspace"`, or choose **Listen for AIOS
-   work**. The CLI needs no inbound listener. The optional setup page is loopback
-   only. Polling is outbound every two seconds while idle and works behind NAT.
+   work**. The worker CLI needs no inbound listener. The optional setup page is
+   loopback-only by default, or available remotely with its own login using the
+   [installer](installation.md). Polling is outbound every two seconds while idle
+   and works behind NAT.
 6. From the operator environment submit to
    `/workspace-client/v3/{binding_id}/links/{link_id}/submit`. Include the ordinary
    immutable assignment, request UUID, and exact current origin `source_node_id`.

@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
 import signal
+import ipaddress
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from .config import ConfigStore
 from .journal import Journal
 from .runner import Runner, agent_dir
+from .ui_settings import UISettings, password_hash, validate_ui, remote_ui
 
 
 def main():
@@ -16,8 +20,24 @@ def main():
         "--config", type=Path, default=Path.home() / ".config/aios-client/client.json"
     )
     sub = parser.add_subparsers(dest="command", required=True)
-    setup = sub.add_parser("setup", help="Open local configuration and run controls")
-    setup.add_argument("--port", type=int, default=8765)
+    setup = sub.add_parser("setup", help="Start the saved local or authenticated remote UI")
+    for command in (setup, sub.add_parser("configure-ui", help="Save the UI address and administrator password")):
+        command.add_argument("--port", type=int)
+        command.add_argument("--host", help="Bind IP; remote listeners require a saved password")
+        command.add_argument("--public-url", help="Exact browser origin, e.g. http://192.168.1.161:8765")
+    ui = sub.choices["configure-ui"]
+    ui.add_argument("--reset-password", action="store_true")
+    ui.add_argument("--tls-certfile", type=Path)
+    ui.add_argument("--tls-keyfile", type=Path)
+    ui.add_argument("--workspace", type=Path, help="Default project directory displayed in setup")
+    doctor_parser = sub.add_parser("doctor", help="Check configuration, credentials, connections and session discovery")
+    doctor_parser.add_argument("--agent", required=True)
+    doctor_parser.add_argument("--probe-model", action="store_true", help="Send a generation/tool probe; provider charges may apply")
+    service = sub.add_parser("service", help="Install an optional systemd user UI or worker service")
+    service.add_argument("action", choices=["install"])
+    service.add_argument("--kind", choices=["ui", "worker"], default="ui")
+    service.add_argument("--agent")
+    service.add_argument("--enable", action="store_true", help="Enable and start the service now")
     for name in ("run", "serve", "check", "status", "stop"):
         p = sub.add_parser(name)
         p.add_argument("--agent", required=True)
@@ -30,18 +50,66 @@ def main():
     args = parser.parse_args()
     store = ConfigStore(args.config)
     try:
+        if args.command in ("configure-ui", "setup"):
+            ui_store = UISettings(store.path)
+            settings = ui_store.load()
+            for name in ("host", "port", "public_url", "tls_certfile", "tls_keyfile"):
+                value = getattr(args, name, None)
+                if value is not None:
+                    settings[name] = str(value) if isinstance(value, Path) else value
+            if args.command == "configure-ui":
+                if args.workspace is not None:
+                    settings["default_workspace"] = str(args.workspace.expanduser().resolve())
+                if args.public_url and args.port is None:
+                    parsed = urlsplit(args.public_url)
+                    settings["port"] = parsed.port or (443 if parsed.scheme == "https" else 80)
+                host = settings.get("host", "127.0.0.1")
+                remote = remote_ui(host, settings.get("public_url", ""))
+                if args.reset_password or (remote and not settings.get("password_hash")):
+                    password = getpass.getpass("Choose UI password (at least 12 characters): ")
+                    if password != getpass.getpass("Repeat UI password: "):
+                        raise ValueError("Passwords do not match; configuration was not changed")
+                    settings["password_hash"] = password_hash(password)
+                ui_store.save(settings)
+                print(f"UI settings saved. Browser URL: {validate_ui(settings)['public_url']}")
+                if settings.get("password_hash"):
+                    print("Sign in as admin using your UI password (separate from AIOS/model keys).")
+                return
+            settings = validate_ui(settings)
         if args.command == "setup":
             import uvicorn
 
             from .server import create_app
 
-            print(f"AIOS Client setup: http://127.0.0.1:{args.port}")
+            print(f"AIOS Client setup: {settings['public_url']}")
+            if settings["password_hash"]:
+                print("UI login: admin (use the password saved by configure-ui)")
+            if not ipaddress.ip_address(settings["host"]).is_loopback and settings["public_url"].startswith("http:"):
+                print("HTTP remote access is for a trusted private network; use HTTPS or a VPN on untrusted networks.")
             uvicorn.run(
-                create_app(store, args.port),
-                host="127.0.0.1",
-                port=args.port,
+                create_app(store, settings["port"], ui_settings=settings),
+                host=settings["host"],
+                port=settings["port"],
+                ssl_certfile=settings["tls_certfile"],
+                ssl_keyfile=settings["tls_keyfile"],
+                proxy_headers=False,
                 access_log=False,
             )
+            return
+        if args.command == "doctor":
+            from .diagnostics import doctor
+            result = doctor(store, args.agent, args.probe_model)
+            print(json.dumps(result, indent=2))
+            if not result["ok"]:
+                parser.exit(1)
+            return
+        if args.command == "service":
+            from .service import install_service
+            unit = install_service(store, args.kind, args.agent, args.enable)
+            print(f"Service saved: {unit}")
+            print(f"Status: systemctl --user status {unit.stem}")
+            print(f"Logs: journalctl --user -u {unit.stem} -f")
+            print("For startup before login, an administrator can run: loginctl enable-linger " + getpass.getuser())
             return
         if args.agent not in store.load()["agents"]:
             raise ValueError("Unknown agent profile; run aios-client setup first")

@@ -6,25 +6,40 @@ tool observations to AIOS. It is a background client with a local setup page, no
 
 ## Install and configure
 
-Python 3.11+, Git, and an existing development workspace are required. Linux is the
-primary target; Windows process support and CI are included. Run under an
-ordinary account inside a dedicated development VM or container. Shell commands have
-that account's permissions: workspace file checks are not a shell sandbox.
+For Ubuntu, use the [installer and remote UI guide](docs/installation.md). Run as the
+ordinary account that will own the client (for example `aiosagent`):
 
 ```bash
-git clone https://github.com/LeetHappyfeet/AIOS_Client.git
+git clone --branch development/installer-remote-ui https://github.com/LeetHappyfeet/AIOS_Client.git
 cd AIOS_Client
+bash install.sh --remote-url http://192.168.1.161:8765
+~/.local/bin/aios-client setup
+```
+
+Replace the example address with your VM IP. The installer handles Python >=3.11
+(including a user-local Python 3.12 when Ubuntu has 3.10), creates `.venv`, installs a
+launcher and saves UI settings. Open the printed URL from another computer and log in
+as **admin** with the UI password chosen during installation. Use `--local-only` for
+loopback setup, or `--service` for an optional systemd user UI service. Remote access
+requires authentication. Use HTTPS or a VPN on untrusted networks; see the guide for
+certificates and firewall details. This branch includes the prior headless credentials
+and v3 worker changes; no manual cherry-picking is needed.
+
+For a manual installation, Python 3.11+, Git and a development workspace are required:
+
+```bash
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install -e .
 aios-client setup
 ```
 
-On Windows activate with `.venv\Scripts\Activate.ps1` in PowerShell. Open the printed
-`http://127.0.0.1:8765` URL on the same machine. The setup server binds only to loopback,
-checks its Host/Origin, and requires a per-process token for changes. It is not intended
-as a remotely exposed control panel. Use an SSH tunnel if necessary, preserving the
-printed loopback URL.
+Manual setup remains loopback-only by default. On Windows activate with
+`.venv\Scripts\Activate.ps1`. To enable remote access, run `aios-client configure-ui
+--host 0.0.0.0 --public-url http://VM_IP:8765` and choose a password. All routes require
+that login; Host/Origin checks and per-process change tokens still apply. Settings
+persist for future `setup` launches. Shell commands have the account's permissions;
+workspace file checks are not a shell sandbox.
 
 1. Save an **AIOS connection**: host/IP, port, HTTP/HTTPS and optional base path.
 2. Save a **generation endpoint**: complete base URL (usually ending in `/v1`), model ID,

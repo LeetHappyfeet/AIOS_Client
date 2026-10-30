@@ -3,7 +3,9 @@ from __future__ import annotations
 import os
 import secrets
 import threading
+import time
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -14,6 +16,8 @@ from .http import API, Model
 from .journal import Journal
 from .protocol import negotiate
 from .runner import Runner, agent_dir
+from .ui_settings import check_basic, validate_ui
+from .diagnostics import connection_hint, installation_info
 
 
 class Manager:
@@ -67,7 +71,7 @@ class Manager:
             t.join(timeout=3)
 
 
-def create_app(store: ConfigStore, port=8765):
+def create_app(store: ConfigStore, port=8765, ui_settings=None):
     from contextlib import asynccontextmanager
 
     manager = Manager(store)
@@ -80,16 +84,37 @@ def create_app(store: ConfigStore, port=8765):
     app = FastAPI(docs_url=None, redoc_url=None, openapi_url=None, lifespan=lifespan)
     app.state.manager = manager
     csrf = secrets.token_urlsafe(32)
-    origin = f"http://127.0.0.1:{port}"
+    settings = validate_ui(ui_settings or {"port": port})
+    origin = settings["public_url"]
+    authority = urlsplit(origin).netloc
+    failures = {}
+    auth_lock = threading.Lock()
 
     @app.middleware("http")
-    async def local_only(request: Request, call_next):
-        if request.headers.get("host") != f"127.0.0.1:{port}":
+    async def protected_ui(request: Request, call_next):
+        if request.headers.get("host") != authority:
             return JSONResponse(
-                {"error": "Use the printed loopback URL"}, status_code=403
+                {"error": "Use the configured browser URL printed at startup"}, status_code=403
             )
         if request.headers.get("origin") not in (None, origin):
             return JSONResponse({"error": "Foreign origin denied"}, status_code=403)
+        if settings["password_hash"]:
+            peer = request.client.host if request.client else "unknown"
+            now = time.monotonic()
+            with auth_lock:
+                attempts, until = failures.get(peer, (0, 0))
+            if attempts >= 5 and until > now:
+                return JSONResponse({"error": "Too many login failures; retry in 30 seconds"}, status_code=429, headers={"Retry-After": "30"})
+            if not check_basic(request.headers.get("authorization", ""), settings["password_hash"]):
+                if request.headers.get("authorization"):
+                    with auth_lock:
+                        if len(failures) >= 256:
+                            failures.clear()
+                        failures[peer] = ((attempts if until > now else 0) + 1, now + 30)
+                return JSONResponse({"error": "UI administrator login required"}, status_code=401,
+                                    headers={"WWW-Authenticate": 'Basic realm="AIOS Client", charset="UTF-8"', "Cache-Control": "no-store"})
+            with auth_lock:
+                failures.pop(peer, None)
         if request.method != "GET" and not secrets.compare_digest(
             request.headers.get("x-client-token", ""), csrf
         ):
@@ -112,7 +137,7 @@ def create_app(store: ConfigStore, port=8765):
 
     @app.exception_handler(RuntimeError)
     async def unavailable(request, exc):
-        return JSONResponse({"error": str(exc)}, status_code=502)
+        return JSONResponse({"error": str(exc), "hint": connection_hint(exc)}, status_code=502)
 
     @app.get("/", response_class=HTMLResponse)
     def home():
@@ -122,6 +147,11 @@ def create_app(store: ConfigStore, port=8765):
     @app.get("/api/config")
     def config():
         return store.load()
+
+    @app.get("/api/installation")
+    def installation():
+        return {**installation_info(), "config_path": str(store.path), "browser_url": origin,
+                "default_workspace": settings["default_workspace"]}
 
     @app.post("/api/config")
     def save(data: dict):
