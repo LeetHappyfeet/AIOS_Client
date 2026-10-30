@@ -1,8 +1,8 @@
 # AIOS Client
 
 AIOS Client runs an existing AIOS character in a software workspace. It calls your
-OpenAI-compatible model, searches and edits files, runs commands, and returns actual
-tool observations to AIOS. It is a background client with a local setup page, not an IDE.
+OpenAI-compatible model, searches and edits files, runs commands, and returns bounded
+task summaries and verification evidence to AIOS. It is a background client with a local setup page, not an IDE.
 
 ## Install and configure
 
@@ -56,6 +56,42 @@ credential. Character ID is the persistent AIOS identity key; instance UUID spec
 experiential continuity. The human/routing user key is distinct from the agent username.
 A source-head conflict stops work. Concurrent chat writes to the same instance require
 later session coordination; do not use an actively changing SillyTavern session here.
+
+## Console visibility and logs
+
+Commands now print live in the terminal running `aios-client run`, `serve`, or
+`setup` (including tasks started from the setup page). The console shows the
+command/argv, working directory, shell, process ID, combined stdout/stderr, exit
+code, timeout/cancellation, milestones, errors and the task result. Records go to
+stderr, leaving CLI JSON results on stdout. Each record has a timestamp, agent
+and run ID. Output is captured as it arrives, independently of model polling;
+programs that buffer their own output may still need an unbuffered option.
+
+The same activity is appended to `activity.log` in that agent's data directory.
+The client prints its exact path when the worker starts. View recent records with:
+
+```bash
+aios-client logs --agent NAME --lines 100
+```
+
+With the default configuration, logs are under
+`~/.config/aios-client/client-data/agents/<agent-hash>/activity.log`.
+There are three rotating backups plus the current file, each about 5 MiB.
+Per-command redacted output logs remain under `artifacts/<run-id>/<process-id>.log`;
+the existing 8 MiB per-command capture limit also limits console output, with a
+truncation notice. SQLite retains model/tool history and verification records.
+Configured AIOS/model keys are redacted and terminal control characters are
+escaped in the activity display. Other command output is recorded as produced.
+
+Raw tool results (file reads, searches, diffs, process polls and recalled memory)
+are **local only**. AIOS receives the task-start observation, bounded milestones,
+the final verification summary, and the structured finish result. Model-requested
+progress is deduplicated, ordinary updates are spaced at least 30 seconds apart,
+and at most 20 model-requested reports are admitted per run. Blocked reasons
+bypass the interval but share the cap; three host lifecycle milestones are
+separate. Lease renewals and event polling continue normally. On upgrade, pending
+raw tool observations are removed from the local outbox before delivery; this
+does not remove observations already ingested by AIOS.
 
 ## Credentials and profiles
 
@@ -161,7 +197,7 @@ event IDs for retries. A lost lease interrupts the assignment; it is never autom
 requeued. If assignment submission times out, its request ID is in the journal and can
 be supplied with `run --request-id UUID` to resolve that same submission.
 
-AIOS receives tool observations and structured `worker_evidence`. A final model reply
+AIOS receives task summaries and structured `worker_evidence`. A final model reply
 only starts host verification. Run status `finished` means execution ended, not that the
 task or a character goal succeeded. `result.evidence.status` reports `passed`, `failed`,
 `incomplete`, `stale`, or `not_configured`. No required checks means no verified completion.
@@ -227,3 +263,4 @@ SQL tests. No production AIOS service or real model is contacted by the test sui
 
 Android/desktop control, interactive PTYs, automatic provisioning, multi-agent teamwork,
 remote artifact download and automatic context compaction are later adapters/features.
+

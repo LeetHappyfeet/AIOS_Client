@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import codecs
 import json
 import os
 import queue
@@ -129,32 +130,47 @@ class ProcessTools:
             size = 0
             try:
                 with log.open("wb") as f:
+                    decoder = codecs.getincrementaldecoder("utf-8")("replace")
                     pending = b""
                     patterns = [x.encode() for x in self.secrets]
-                    keep = max([len(x) for x in patterns] + [1])
 
                     def emit(data):
                         nonlocal size
                         for secret in patterns:
                             data = data.replace(secret, b"[REDACTED]")
                         remaining = max(0, self.capture_limit - size)
-                        f.write(data[:remaining])
+                        captured = data[:remaining]
+                        f.write(captured)
                         f.flush()
-                        size += len(data[:remaining])
-                        record["truncated"] |= len(data) > remaining
+                        size += len(captured)
+                        output = decoder.decode(captured)
+                        if output:
+                            self.on_event("process_output", {"process_id": pid, "output": output})
+                        if len(data) > remaining and not record["truncated"]:
+                            record["truncated"] = True
+                            self.on_event("process_output_truncated", {
+                                "process_id": pid, "capture_limit": self.capture_limit,
+                            })
 
                     while chunk := p.stdout.read1(4096):
                         pending += chunk
-                        cutoff = max(0, len(pending) - keep)
                         for secret in patterns:
-                            start = pending.find(secret)
-                            while start >= 0:
-                                if start < cutoff < start + len(secret):
-                                    cutoff = start
-                                start = pending.find(secret, start + 1)
+                            pending = pending.replace(secret, b"[REDACTED]")
+                        # Hold only a suffix that could be a split credential. A short
+                        # flushed prompt must be visible before the process exits.
+                        keep = 0
+                        for secret in patterns:
+                            for length in range(min(len(secret) - 1, len(pending)), 0, -1):
+                                if pending.endswith(secret[:length]):
+                                    keep = max(keep, length)
+                                    break
+                        cutoff = len(pending) - keep
                         emit(pending[:cutoff])
                         pending = pending[cutoff:]
                     emit(pending)
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        self.on_event("process_output", {"process_id": pid, "output": tail})
                 p.wait()
             finally:
                 p.stdout.close()
@@ -341,3 +357,4 @@ def register(registry, processes):
             "workspace.processes",
             effect=effect,
         )
+

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import signal
 from pathlib import Path
@@ -18,9 +19,11 @@ def main():
     sub = parser.add_subparsers(dest="command", required=True)
     setup = sub.add_parser("setup", help="Open local configuration and run controls")
     setup.add_argument("--port", type=int, default=8765)
-    for name in ("run", "serve", "check", "status", "stop"):
+    for name in ("run", "serve", "check", "status", "stop", "logs"):
         p = sub.add_parser(name)
         p.add_argument("--agent", required=True)
+        if name == "logs":
+            p.add_argument("--lines", type=int, default=100)
         if name == "run":
             p.add_argument("--task-file", type=Path, required=True)
             p.add_argument(
@@ -45,6 +48,17 @@ def main():
             return
         if args.agent not in store.load()["agents"]:
             raise ValueError("Unknown agent profile; run aios-client setup first")
+        if args.command == "logs":
+            if not 1 <= args.lines <= 10000:
+                raise ValueError("Log lines must be between 1 and 10000")
+            path = agent_dir(store, args.agent) / "activity.log"
+            print(f"Activity log: {path}")
+            if path.exists():
+                with path.open(encoding="utf-8") as log:
+                    print("".join(deque(log, maxlen=args.lines)), end="")
+            else:
+                print("No activity logged yet")
+            return
         if args.command == "status":
             journal = Journal(agent_dir(store, args.agent) / "journal.sqlite3")
             print(json.dumps(journal.status(), indent=2))
@@ -95,3 +109,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

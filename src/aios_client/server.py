@@ -252,6 +252,7 @@ def create_app(store: ConfigStore, port=8765):
                         and manager.running[name][1].is_alive(),
                         "error": manager.errors.get(name),
                         "runs": journal.status(),
+                        "log_path": str(agent_dir(store, name) / "activity.log"),
                     }
                 )
             finally:
@@ -269,3 +270,4 @@ def create_app(store: ConfigStore, port=8765):
             journal.db.close()
 
     return app
+

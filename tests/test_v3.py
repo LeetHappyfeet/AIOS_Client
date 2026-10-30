@@ -194,6 +194,8 @@ def test_v3_worker_recall_progress_and_immutable_assignment(tmp_path, monkeypatc
             == "not_configured"
         )
         claim = r.journal.claims()[0]
+        assert len(service.bodies("/observe")) == 2
+        assert not any("tool" in b["payload"] for b in service.bodies("/observe"))
         assert claim["claim"]["assignment_hash"] == spec.digest()
         assert claim["lease"]["claim_token"] == service.token
         assert claim["cursor"] == 1
@@ -258,6 +260,33 @@ def test_cancel_stops_owned_process(tmp_path, monkeypatch):
         assert service.bodies("/finish")[0]["status"] == "cancelled"
         assert all(p["p"].poll() is not None for p in r.workspace.processes.values())
         assert any(p["cancelled"] for p in r.workspace.processes.values())
+    finally:
+        r.close()
+
+
+def test_progress_flood_stays_bounded_and_tools_stay_local(tmp_path, monkeypatch):
+    r = make_runner(tmp_path, monkeypatch)
+    service = Service(assignment("Inspect without flooding memory"))
+    r.api = API("http://aios", transport=httpx.MockTransport(service.handle))
+    step = 0
+    receipts = []
+
+    def model(body):
+        nonlocal step
+        if step:
+            receipts.append(json.loads(body["messages"][-1]["content"])["reported"])
+        step += 1
+        if step <= 30:
+            return tool("aios_progress", {"kind": "blocked", "summary": f"Reason {step}"}, str(step))
+        return {"role": "assistant", "content": "Inspection complete"}
+
+    r.model = model_api(model)
+    try:
+        assert r.work()["status"] == "finished"
+        assert receipts.count(True) == 20 and receipts.count(False) == 10
+        assert len(service.bodies("/progress")) == 23
+        assert len(service.bodies("/observe")) == 2
+        assert not any("tool" in b["payload"] for b in service.bodies("/observe"))
     finally:
         r.close()
 
@@ -571,3 +600,4 @@ def test_terminal_state_and_delivery_commit_together_and_adopt_server_cancellati
     finally:
         api.close()
         j.db.close()
+

@@ -17,8 +17,7 @@ class RemoteTools:
         kind: Literal["progress", "blocked"],
         summary: Annotated[str, Field(min_length=1, max_length=1000)],
     ):
-        self.progress(kind, summary)
-        return {"reported": True}
+        return {"reported": self.progress(kind, summary) is not False}
 
     def register(self, registry):
         registry.add(
@@ -33,3 +32,4 @@ class RemoteTools:
             "Report a meaningful milestone or blocked reason",
             "aios.progress",
         )
+

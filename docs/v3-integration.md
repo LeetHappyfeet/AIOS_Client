@@ -65,8 +65,12 @@ responses are retained as redacted local artifacts with a bounded excerpt.
 Host milestones cover baseline/context preparation, verification start, and
 verification outcome. Models can report useful intermediate progress or a blocked
 reason. Progress is a worker report, not a successful check or goal transition.
-Existing observations, host verification, finish, and separate human review remain
-in place. SillyTavern gets actual status in its next HUD; immediate UI updates
+Task-start/final observations, host verification, finish, and separate human review
+remain in place. Raw tool results stay in the local journal/artifacts; they are not
+posted back as observations, including recall results and process polling. Model
+progress is deduplicated, spaced by 30 seconds for ordinary updates, and capped at
+20 reports per run (blocked reasons bypass spacing but share the cap). The three
+host milestones are separate. SillyTavern gets actual status in its next HUD; immediate UI updates
 require polling in that integration. This client does not modify SillyTavern.
 
 ## Cancellation, reconnect, and recovery
@@ -141,3 +145,4 @@ For rollout, keep this development branch, test with a disposable AIOS installat
 and scripted model, then test a real model and inspect retained evidence before
 merging. The unit/integration suite mocks AIOS HTTP and model responses; it does not
 claim live server, production recall, or remote attestation validation.
+

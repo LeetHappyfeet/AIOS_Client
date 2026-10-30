@@ -245,7 +245,8 @@ def test_argv_stdin_eof_and_process_receipts(workspace):
     assert result["exit_code"] == 0 and marker in result["output"]
     assert "hello [REDACTED]" in result["output"]
     assert result["stdin_closed"] and not result["input_pending"]
-    assert [x[0] for x in events] == ["process_started", "process_exited"]
+    assert [x[0] for x in events if x[0] != "process_output"] == ["process_started", "process_exited"]
+    assert any(kind == "process_output" for kind, body in events)
     assert events[0][1]["os_pid"] == w.processes[pid]["p"].pid
     assert "test-private-key" not in json.dumps(events)
     with pytest.raises(ValueError):
@@ -800,3 +801,4 @@ def test_large_recall_keeps_status_revision_and_full_provenance(workspace):
     assert result["status"] == "changed" and result["knowledge_revision"] == 42
     retained = json.loads((workspace.artifacts / result["artifact_id"]).read_text())
     assert retained["hits"][0]["durable_knowledge"] is False
+

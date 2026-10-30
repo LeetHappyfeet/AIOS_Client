@@ -104,6 +104,23 @@ class Journal:
                 (key, run, path, encoded),
             )
 
+    def discard_tool_observations(self):
+        """Drop obsolete raw-tool uploads on upgrade; retain summaries and finishes."""
+        count = 0
+        with self.delivery_lock, self.lock, self.db:
+            for key, path, body in self.db.execute(
+                "SELECT id,path,body FROM outbox"
+            ).fetchall():
+                payload = json.loads(body).get("payload")
+                if (
+                    path.endswith("/observe")
+                    and isinstance(payload, dict)
+                    and payload.get("tool")
+                ):
+                    self.db.execute("DELETE FROM outbox WHERE id=?", (key,))
+                    count += 1
+        return count
+
     def flush(self, api):
         with self.delivery_lock:
             self._flush(api)
@@ -223,3 +240,4 @@ class Journal:
                 {"id": r[0], "kind": r[1], "body": json.loads(r[2])}
                 for r in reversed(rows)
             ]
+

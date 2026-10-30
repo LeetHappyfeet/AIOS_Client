@@ -9,6 +9,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from uuid import uuid4
 
+from .activity import ActivityLog, ProgressLimiter
 from .agent.session import AgentSession
 from .agent.tasks import TaskBlocked
 from .assignment import assignment
@@ -93,12 +94,14 @@ class Runner:
         self.last_error = None
         self.protocol_version = 2
         self.run_stop = threading.Event()
+        self.activity = ActivityLog(self.directory, agent, [self.aios_key, self.model_key])
 
     def close(self):
         self.stop()
         self.api.close()
         self.model.close()
         self.journal.db.close()
+        self.activity.close()
 
     def stop(self):
         self.stop_event.set()
@@ -180,6 +183,7 @@ class Runner:
 
     def work(self, objective=None, request_id=None, serve=False):
         with run_lock(self.directory / "run.lock"):
+            self.activity.write("startup", "worker", f"Activity log: {self.activity.path}")
             stop_file = self.directory / "stop"
             stop_file.unlink(missing_ok=True)
             if objective and self.profile.get("link_id"):
@@ -197,6 +201,12 @@ class Runner:
                     raise ValueError(
                         "Retained runs belong to another server/binding; reconcile before changing this profile"
                     )
+            discarded = self.journal.discard_tool_observations()
+            if discarded:
+                self.activity.write(
+                    "startup", "reporting",
+                    f"Discarded {discarded} queued raw tool observations",
+                )
             self.journal.recover()
             self.journal.flush(self.api)
             for old in retained:
@@ -240,6 +250,8 @@ class Runner:
                         and exc.status != 429
                     ):
                         raise
+                    if self.last_error != str(exc):
+                        self.activity.write("listener", "connection_error", str(exc))
                     self.last_error = str(exc)
                     self.stop_event.wait(2)
                     continue
@@ -279,11 +291,22 @@ class Runner:
         self.run_stop = threading.Event()
         if self.stop_event.is_set():
             self.run_stop.set()
+        self.activity.write(
+            rid, "started",
+            f"Task: {claim['objective']}\nActivity log: {self.activity.path}",
+        )
+
+        def local_event(kind, body):
+            self.activity.process(rid, kind, body)
+            # Output already has a retained process log; do not duplicate chunks in SQLite.
+            if kind != "process_output":
+                self.journal.event(rid, kind, body)
+
         workspace = self.workspace = Workspace(
             self.profile["workspace"],
             self.directory / "artifacts" / rid,
             [self.aios_key, self.model_key],
-            on_event=lambda kind, body: self.journal.event(rid, kind, body),
+            on_event=local_event,
         )
         lease_stop = threading.Event()
         lease_error = []
@@ -303,18 +326,24 @@ class Runner:
                         "Cancellation requested" if cancelled.is_set() else "Stopped"
                     )
 
-        def progress(kind, summary):
-            if self.protocol_version == 3:
-                self._deliver(
-                    rid,
-                    v3_prefix + "/progress",
-                    {
-                        **lease,
-                        "event_key": str(uuid4()),
-                        "kind": kind,
-                        "summary": bounded_text(workspace.redact(summary), 1000),
-                    },
-                )
+        limiter = ProgressLimiter(time.monotonic)
+
+        def progress(kind, summary, force=False):
+            summary = bounded_text(workspace.redact(summary), 1000)
+            self.activity.write(rid, kind, summary)
+            if self.protocol_version != 3 or not limiter.admit(kind, summary, force):
+                return False
+            self._deliver(
+                rid,
+                v3_prefix + "/progress",
+                {
+                    **lease,
+                    "event_key": str(uuid4()),
+                    "kind": kind,
+                    "summary": summary,
+                },
+            )
+            return True
 
         def renew():
             while not lease_stop.wait(1):
@@ -383,23 +412,16 @@ class Runner:
             progress(
                 "progress",
                 "Assignment accepted; execution context and workspace baseline prepared",
+                force=True,
             )
 
             def observe(name, call_id, observation):
-                encoded = json.dumps(observation)
-                self._deliver(
-                    rid,
-                    prefix + "/observe",
-                    {
-                        **lease,
-                        "event_key": str(uuid4()),
-                        "text": f"Workspace tool {name}: {encoded}"[:24000],
-                        "payload": {
-                            "tool": name,
-                            "tool_call_id": call_id,
-                            "result": observation,
-                        },
-                    },
+                # AgentSession retains the full trace in its local journal/context.
+                # Raw file reads, process polling and recall results are not memories.
+                detail = observation.get("error")
+                self.activity.write(
+                    rid, "tool_result",
+                    f"{name} call={call_id}" + (f" error={detail}" if detail else ""),
                 )
 
             if self.protocol_version == 3:
@@ -425,7 +447,8 @@ class Runner:
             )
             report = session.run()
             progress(
-                "progress", "Model work ended; running immutable assignment checks"
+                "progress", "Model work ended; running immutable assignment checks",
+                force=True,
             )
             renew_current()
             final_git = workspace.git_status()
@@ -456,6 +479,7 @@ class Runner:
                 progress(
                     "progress",
                     "Host verification ended: " + result["evidence"]["status"],
+                    force=True,
                 )
             except Exception:
                 self.journal.event(
@@ -540,6 +564,7 @@ class Runner:
                 result["task_state"] = "blocked"
                 result["requires_operator"] = True
             self.last_error = result["error"]
+            self.activity.write(rid, "error", result["error"])
             if not self.run_stop.is_set() and not isinstance(exc, TaskBlocked):
                 try:
                     progress("blocked", result["error"])
@@ -551,6 +576,7 @@ class Runner:
             renewer.join(timeout=46)
             if cancelled.is_set():
                 status = "cancelled"
+            self.activity.write(rid, status, json.dumps(result, ensure_ascii=False))
             # Final local state and pending delivery must survive the same crash boundary.
             self.journal.finish(
                 rid,
@@ -565,6 +591,10 @@ class Runner:
                     next(m for m in self.journal.claims() if m["run_id"] == rid)
                 )
             except Exception:
+                self.activity.write(
+                    rid, "delivery_pending",
+                    "AIOS delivery pending; reconnect to retry notifications",
+                )
                 self.journal.event(
                     rid,
                     "delivery_pending",
@@ -572,3 +602,4 @@ class Runner:
                         "message": "AIOS delivery pending; reconnect to retry notifications"
                     },
                 )
+

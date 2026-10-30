@@ -342,7 +342,12 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch, credential_storag
     assert finished[0]["result"]["evidence"]["status"] == "passed"
     assert "a+b" in (root / "calc.py").read_text()
     assert finished[0]["status"] == "finished" and finished[0]["claim_token"] == token
-    assert any(x["payload"].get("tool") == "apply_patch" for x in observations)
+    assert len(observations) == 2  # Task start and final verification only.
+    assert all("tool" not in x["payload"] for x in observations)
+    activity = runner.activity.path.read_text()
+    assert "process_started" in activity and "-m unittest -v" in activity
+    assert "output process=" in activity and "process_exited" in activity
+    assert "server-secret" not in activity and "model-secret" not in activity
     assert all(x["event_key"] for x in observations)
     runner.close()
 
@@ -478,3 +483,4 @@ def test_final_model_claim_never_overrides_host_verification(
         )
     finally:
         runner.close()
+
