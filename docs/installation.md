@@ -148,8 +148,8 @@ the listing failure and optional probe are reported separately. Existing `check`
 the profile and probes generation, so it has different effects from doctor.
 
 For an initial assignment use a small task with an explicit required check. A final
-model message or `finished` run alone is not passing host verification. See the README's
-assignment examples. No live provider call is made during installation.
+model message or `finished` run alone is not passing host verification. See the [client reference](client-reference.md#structured-assignments-and-completion)
+for assignment examples. No live provider call is made during installation.
 
 ## Optional background services
 
