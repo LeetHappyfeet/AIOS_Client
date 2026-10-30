@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import secrets
 import threading
 from pathlib import Path
@@ -139,7 +140,11 @@ def create_app(store: ConfigStore, port=8765):
         name = data.get("name", "")
         if not name or len(name) > 100 or not isinstance(data.get("value"), str):
             raise ValueError("Secret name and value required")
-        return {"secret_ref": store.secrets.set(name, data["value"])}
+        return {"secret_ref": store.secrets.set(name, data["value"], data.get("storage", "keyring"))}
+
+    @app.get("/api/credential-storage")
+    def credential_storage():
+        return {"local_file": os.name == "posix"}
 
     @app.post("/api/test-aios")
     def test_aios(data: dict):

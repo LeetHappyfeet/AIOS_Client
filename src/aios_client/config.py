@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import json
 import os
 import re
+import stat
 import tempfile
 import threading
 from pathlib import Path
@@ -47,14 +49,74 @@ def aios_url(profile: dict) -> str:
 
 
 class Secrets:
-    """Never persist entered keys in profile JSON. No plaintext fallback."""
+    """Credential references; local plaintext storage is an explicit POSIX option."""
 
     def __init__(self, namespace: str):
         self.namespace = "aios-client:" + namespace
+        path = Path(namespace)
+        self.directory = path.parent / (path.name + ".credentials")
+
+    @staticmethod
+    def _private(info, directory=False):
+        kind = stat.S_ISDIR if directory else stat.S_ISREG
+        if not kind(info.st_mode) or info.st_uid != os.getuid() or info.st_mode & 0o077:
+            raise ValueError(
+                "Local credentials must be owned by this user with directory mode 700 and file mode 600"
+            )
+
+    def _local_path(self, name: str, create=False) -> Path:
+        if os.name != "posix":
+            raise ValueError("Private local files require POSIX permissions; use OS keyring or env:NAME")
+        if not re.fullmatch(r"[\w .:-]{1,160}", name):
+            raise ValueError("Invalid credential name")
+        if create:
+            self.directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+        self._private(self.directory.lstat(), directory=True)
+        return self.directory / (hashlib.sha256(name.encode()).hexdigest() + ".json")
+
+    def _local_get(self, name: str) -> str:
+        try:
+            path = self._local_path(name)
+            fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            with os.fdopen(fd) as f:
+                self._private(os.fstat(f.fileno()))
+                try:
+                    value = json.load(f)
+                except (ValueError, UnicodeError):
+                    raise ValueError("Local credential file is invalid; replace the saved key") from None
+            if not isinstance(value, str) or not value:
+                raise ValueError("Local credential file is empty or invalid; replace the saved key")
+            return value
+        except FileNotFoundError:
+            raise ValueError("Saved local credential is missing; enter and save the key again") from None
+        except OSError:
+            raise ValueError("Cannot read local credential file; check ownership and permissions") from None
+
+    def _local_set(self, name: str, value: str) -> str:
+        try:
+            path = self._local_path(name, create=True)
+            if path.exists() or path.is_symlink():
+                self._private(path.lstat())
+            fd, tmp = tempfile.mkstemp(dir=self.directory)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    os.fchmod(f.fileno(), 0o600)
+                    json.dump(value, f)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+            finally:
+                if os.path.exists(tmp):
+                    os.unlink(tmp)
+        except OSError:
+            raise ValueError("Cannot save local credential file; check ownership and permissions") from None
+        return "file:" + name
 
     def get(self, ref: str) -> str:
         if not ref:
             return ""
+        if ref.startswith("file:"):
+            return self._local_get(ref[5:])
         if ref.startswith("env:"):
             value = os.environ.get(ref[4:], "")
             if not value:
@@ -63,7 +125,7 @@ class Secrets:
                 )
             return value
         if not ref.startswith("keyring:"):
-            raise ValueError("Secret reference must use env: or keyring:")
+            raise ValueError("Credential reference must use env:, keyring:, or file:. Enter API keys in the password field, then save the profile.")
         import keyring
 
         try:
@@ -73,18 +135,34 @@ class Secrets:
                 "Credential storage unavailable; use an environment variable reference"
             ) from None
 
-    def set(self, name: str, value: str) -> str:
+    def set(self, name: str, value: str, storage="keyring") -> str:
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError("Enter a non-empty API key")
+        if storage == "file":
+            return self._local_set(name, value)
+        if storage != "keyring":
+            raise ValueError("Choose OS keyring or private local file storage")
         import keyring
 
         try:
             keyring.set_password(self.namespace, name, value)
         except Exception:
             raise ValueError(
-                "No usable OS credential store. Set an environment variable and use env:NAME"
+                "No usable OS credential store. Choose Private local file on Linux, or use env:NAME"
             ) from None
         return "keyring:" + name
 
     def delete(self, ref: str):
+        if ref.startswith("file:"):
+            try:
+                path = self._local_path(ref[5:])
+                self._private(path.lstat())
+                path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                raise ValueError("Cannot remove local credential file; check permissions") from None
+            return
         if ref.startswith("keyring:"):
             import keyring
 
@@ -123,8 +201,8 @@ class ConfigStore:
                 if any(k in profile for k in ("api_key", "password", "token")):
                     raise ValueError("Use secret_ref, never store a key in profiles")
                 ref = profile.get("secret_ref", "")
-                if ref and not re.fullmatch(r"(?:env|keyring):[\w .:-]{1,160}", ref):
-                    raise ValueError("Invalid secret reference")
+                if ref and not re.fullmatch(r"(?:env|keyring|file):[\w .:-]{1,160}", ref):
+                    raise ValueError("Credential reference must use env:, keyring:, or file:. Enter the actual key in the password field, then save the profile.")
         for p in data["aios"].values():
             aios_url(p)
             if p.get("secret_ref") in {

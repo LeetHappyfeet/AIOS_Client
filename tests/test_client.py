@@ -211,12 +211,21 @@ def test_duplicate_process_lock(tmp_path):
             pass
 
 
-def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
+@pytest.mark.parametrize("credential_storage", ["env", "file"])
+def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch, credential_storage):
     monkeypatch.setenv("TEST_AIOS_KEY", "server-secret")
     monkeypatch.setenv("TEST_MODEL_KEY", "model-secret")
     store = ConfigStore(tmp_path / "c.json")
     c = config(tmp_path)
+    if credential_storage == "file":
+        if sys.platform == "win32":
+            pytest.skip("POSIX credential files")
+        c["aios"]["local"]["secret_ref"] = store.secrets.set("a:local", "server-secret", "file")
+        c["endpoints"]["model"]["secret_ref"] = store.secrets.set("e:model", "model-secret", "file")
+        monkeypatch.delenv("TEST_AIOS_KEY")
+        monkeypatch.delenv("TEST_MODEL_KEY")
     store.save(c)
+    store = ConfigStore(store.path)  # new client process, same saved configuration
     root = Path(c["agents"]["worker"]["workspace"])
     (root / "calc.py").write_text("def add(a,b):\n    return a-b\n")
     (root / "test_calc.py").write_text(
@@ -245,6 +254,7 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
     finished = []
 
     def aios(r):
+        assert r.headers["authorization"] == "Bearer server-secret"
         p = r.url.path
         body = json.loads(r.content) if r.content else {}
         if p.endswith("/protocol"):
@@ -286,6 +296,7 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
 
     def model(r):
         nonlocal step
+        assert r.headers["authorization"] == "Bearer model-secret"
         body = json.loads(r.content)
         messages = body["messages"]
         assert "IDENTITY: Cortana" in messages[0]["content"]
@@ -324,8 +335,8 @@ def test_end_to_end_scripted_coding_run(tmp_path, monkeypatch):
         step += 1
         return httpx.Response(200, json={"choices": [{"message": m}]})
 
-    runner.api = API("http://aios", transport=httpx.MockTransport(aios))
-    runner.model = Model("http://model/v1", transport=httpx.MockTransport(model))
+    runner.api = API("http://aios", runner.aios_key, transport=httpx.MockTransport(aios))
+    runner.model = Model("http://model/v1", runner.model_key, transport=httpx.MockTransport(model))
     result = runner.work(spec.model_dump(mode="json"))
     assert result["status"] == "finished" and seen_exit == [0]
     assert finished[0]["result"]["evidence"]["status"] == "passed"

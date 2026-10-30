@@ -59,11 +59,40 @@ later session coordination; do not use an actively changing SillyTavern session 
 
 ## Credentials and profiles
 
-Entered keys are stored in the OS credential store using keyring; profile JSON contains
-only `keyring:...` references. There is no plaintext fallback. On headless Linux without
-Secret Service or another usable keyring backend, set a process environment variable
-before starting the client and enter `env:VARIABLE_NAME` instead. A model key is optional.
-Remove/replace keys in setup; clear the profile reference and save after removal.
+Save both the AIOS workspace key and model-provider key once in the setup page:
+
+1. Choose **Private local file (headless Linux)** for each connection's key storage.
+2. Paste the actual key into **Enter / replace API key**. Leave the advanced credential
+   reference alone; it is filled automatically.
+3. Click **Save connection** or **Save endpoint**. This stores an entered key as well as
+   the profile. Then test the connection or load models.
+4. On subsequent launches, run `aios-client setup` or `aios-client serve --agent NAME`
+   normally. No credential exports or manual sourcing are required.
+
+The local-file option is the default on POSIX systems. It stores **unencrypted** keys
+separately from profiles in `client.json.credentials/` beside the configuration file,
+using a directory with mode `700` and individual files with mode `600`. Only the owning
+OS user and root should have access. The client rejects files/directories with unsafe
+ownership, group/other permissions, or symlinks. This is not isolation from commands
+running as that same user. Keep credentials outside the agent's project workspace.
+The directory is ignored by Git; profile exports include `file:...` references, never
+key values. Moving profiles to another machine requires entering its keys again.
+Back up the private credential directory separately if needed; protect that backup.
+With `--config PATH`, local credentials use `PATH.credentials/`.
+
+**OS keyring** remains available through the storage selector. It requires a usable,
+unlocked OS credential store and returns `keyring:...` references; a keyring failure
+does not silently fall back to a file. Windows uses OS keyring or environment references
+because this implementation requires POSIX permissions for local files.
+
+Existing `env:VARIABLE_NAME` references still work for externally managed deployments.
+Their variables must be present before launching the client. The reference field is
+not a place to paste an actual API key. A model key is optional for endpoints that do
+not require authentication. AIOS's worker key and a provider's model key are separate.
+Blank password fields preserve existing keys. To replace one, enter the new key and
+save the connection/endpoint. To remove one, click **Remove key**, then save the profile.
+Keys are never returned to the browser. This stores client credentials only; AIOS must
+still have its matching worker key configured in the server's own launch environment.
 
 Default configuration: `~/.config/aios-client/client.json`. Override with the global
 `--config PATH` option. The configuration page can import/export profiles without keys.
