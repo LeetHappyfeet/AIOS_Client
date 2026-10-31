@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Annotated
@@ -12,6 +13,7 @@ from pydantic import Field
 
 from .tools import files, git, inspection, network, output, processes, results
 from .tools.registry import Registry
+from .tools.privileges import Privileges
 
 EXCLUDED = files.EXCLUDED
 
@@ -27,7 +29,9 @@ class Workspace:
         process_backend=None,
         http_origins=(),
         http_transport=None,
+        administration_enabled=False,
     ):
+        self.privileges = Privileges(administration_enabled)
         self.root = Path(root).expanduser().resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("Workspace must be an existing directory")
@@ -59,6 +63,9 @@ class Workspace:
             "Inspect workspace, OS/kernel, identity, tool paths and disk space without shell commands, sudo probes or test files",
             "host.inspect",
         )
+        self.registry.add("inspect_privileges", self.privileges.inspect,
+                          "Check effective root identity and, when administration is enabled, fixed noninteractive sudo id probe",
+                          "host.inspect")
         self.registry.add(
             "host_info",
             self.host_info,
@@ -174,6 +181,8 @@ class Workspace:
     def host_info(self):
         return {
             **self.process_manager.backend.capabilities(),
+            "privilege_escalation": self.privileges.enabled and os.name == "posix",
+            "privileges": self.privileges.status(),
             "workspace": str(self.root),
             "tool_capabilities": sorted(
                 {t.capability for t in self.registry.tools.values() if self.registry.permitted(t)}

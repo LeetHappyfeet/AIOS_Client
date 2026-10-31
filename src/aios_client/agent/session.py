@@ -40,7 +40,7 @@ class AgentSession:
         self.registry = workspace.registry
         self.registry.read_only = self.registry.read_only or requires_read_only(spec.objective)
         if self.registry.read_only:
-            system += "\nRead-only inspection is enforced: use inspect_environment/file reads; return JSON directly without creating files or launching commands."
+            system += "\nRead-only inspection is enforced: use inspect_environment, inspect_privileges and file reads; return JSON directly without creating files or launching commands."
         self.instructions = RepositoryInstructions(workspace)
         self.context = WorkingContext(
             system,

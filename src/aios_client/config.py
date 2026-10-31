@@ -221,6 +221,8 @@ class ConfigStore:
         for p in data["agents"].values():
             from .tools.network import canonical_origin
 
+            if type(p.get("administration_enabled", False)) is not bool:
+                raise ValueError("administration_enabled must be a boolean")
             origins = p.get("http_origins", [])
             if type(origins) is not list or len(origins) > 20 or any(type(x) is not str for x in origins):
                 raise ValueError("http_origins must be a list of at most 20 HTTP(S) origins")

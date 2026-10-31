@@ -351,3 +351,46 @@ HEAD and OPTIONS without credentials or redirects. `process_output_summary` and
 `search_process_output` inspect noisy command logs locally, while `inspect_path`
 reports filesystem metadata. See [coding tool contracts](coding-runtime.md) for
 arguments, limits and examples.
+
+
+
+## Root and sudo administration
+
+In **Agent profile → Administration**, select **Enable passwordless sudo / existing
+root**, save, then click **Check root / sudo access**. Stop and restart the listener
+after changing a profile. Existing profiles default to disabled. The setting does
+not grant Linux permissions: configure passwordless sudo for the OS account running
+the client first. No sudo/root password is stored or sent to the model.
+
+The check reports the effective UID and runs only `sudo -n -- <id-path> -u` with a
+five-second timeout when enabled on POSIX and not already root. `available` means
+that command returned UID 0 at check time; command-specific sudo rules may still
+deny other work, and cached sudo authentication can expire.
+`denied` means the probe did not establish access; check sudo policy or password
+requirements. `unavailable`, `timeout`, `unsupported`, and `already_root` are distinct
+states. A disabled profile does not launch a sudo probe.
+
+Agents can call `inspect_privileges`, then `run_command` with `elevated: true` and
+either `argv` or a shell command. For example:
+
+```json
+{"argv": ["id", "-u"], "elevated": true}
+```
+
+The client uses noninteractive `sudo -n -- ...`; an already-root client executes
+directly. Shell elevation supports sh/bash. Logs retain the actual sudo argv and
+exit status. A root process inherits root authority regardless of this preference.
+The administration setting is not a sandbox: ordinary shell tools already have
+the account's OS permissions and can invoke sudo themselves.
+
+Read-only inspection continues to reject arbitrary commands, including elevated
+commands. The fixed `inspect_privileges` tool remains available, so verifying sudo
+access no longer requires enabling arbitrary execution. Existing task restrictions
+still apply. For administration tasks, submit a fresh assignment authorizing the
+needed commands rather than reusing a read-only inspection assignment.
+
+Launching the entire client as root is supported by inherited process identity,
+but can select a different home/config directory; use an explicit `--config PATH`
+if appropriate. Prefer running as the dedicated account with sudo. Elevated child
+processes may resist cancellation by the unprivileged client; retain an external
+VM stop mechanism. This release does not add Windows UAC elevation.

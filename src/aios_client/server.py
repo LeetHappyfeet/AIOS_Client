@@ -160,6 +160,12 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
         store.save(data)
         return {"ok": True}
 
+    @app.post("/api/privileges")
+    def privileges(data: dict):
+        from .tools.privileges import Privileges
+        profile = store.load()["agents"][data["agent"]]
+        return Privileges(profile.get("administration_enabled", False)).inspect()
+
     @app.post("/api/secret")
     def secret(data: dict):
         if manager.active():

@@ -373,7 +373,8 @@ arbitrary commands/stdin, Git subprocesses, and HTTP probes. `inspect_environmen
 collects OS/kernel, workspace path, effective identity, candidate directory access,
 disk space and common tool paths using fixed host APIs. It does not create test
 files or invoke sudo. Tool versions and sudo privileges remain unknown unless
-separately authorized and observed. File reads and direct JSON/text results are
+separately authorized and observed using `inspect_privileges` (enabled in the saved
+administration profile). File reads and direct JSON/text results are
 supported; client journals and audit artifacts still persist outside task output.
 
 Update AIOS together with the client: its standard `workspace / experimental_task`

@@ -18,6 +18,7 @@ from .platforms import ProcessBackend
 
 class ProcessTools:
     def __init__(self, workspace, on_event=lambda *args: None, backend=None):
+        self.privileges = workspace.privileges
         self.path, self.artifacts = workspace.path, workspace.artifacts
         self.secrets, self.clean, self.redact = (
             workspace.secrets,
@@ -39,15 +40,19 @@ class ProcessTools:
         ] = "default",
         stdin: bool = False,
         timeout_seconds: Annotated[float, Field(gt=0, le=1800)] | None = None,
+        elevated: bool = False,
     ):
         with self.process_lock:
             if self.cancelled.is_set():
                 raise RuntimeError("Workspace stopped")
+            if elevated:
+                argv = self.privileges.elevated_argv(command, argv, shell)
+                command, shell = None, "default"
             return self._start_command(
-                command, cwd, argv, shell, stdin, timeout_seconds
+                command, cwd, argv, shell, stdin, timeout_seconds, elevated
             )
 
-    def _start_command(self, command, cwd, argv, shell, stdin, timeout_seconds):
+    def _start_command(self, command, cwd, argv, shell, stdin, timeout_seconds, elevated=False):
         if command is not None and (not command or len(command) > 8000):
             raise ValueError("Invalid command length")
         if argv is not None and len(json.dumps(argv)) > 16000:
@@ -79,6 +84,7 @@ class ProcessTools:
             "resolved_cwd": str(resolved_cwd),
             "started_at": time.time(),
             "ended_at": None,
+            "elevated": elevated,
             "stdin_enabled": stdin,
             "input_queue": queue.Queue(maxsize=16),
             "input_closed": not stdin,
@@ -97,6 +103,7 @@ class ProcessTools:
                         "shell": shell,
                         "cwd": cwd,
                         "resolved_cwd": str(resolved_cwd),
+                        "elevated": elevated,
                         "stdin": stdin,
                         "artifact_id": log.name,
                         "started_at": record["started_at"],
@@ -237,6 +244,7 @@ class ProcessTools:
             "process_id": pid,
             "artifact_id": log.name,
             "status": "started",
+            "elevated": elevated,
             "os_pid": p.pid,
             "shell": shell,
             "stdin_enabled": stdin,
@@ -380,7 +388,7 @@ class ProcessTools:
 
 def register(registry, processes):
     for name, description in {
-        "run_command": "Start a workspace command or argv process. Select an available shell; follow its process handle",
+        "run_command": "Start a command or argv process; elevated=true requests noninteractive sudo when administration is enabled. Follow its process handle",
         "read_process": "Read bounded UTF-8 output by byte cursor, exit status, cancellation and input status",
         "wait_process": "Wait up to 30 seconds for output or completion, then read from cursor; wait timeout is not command failure",
         "write_process": "Queue bounded UTF-8 stdin; optionally close stdin. Queued does not mean delivered",
