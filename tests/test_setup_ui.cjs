@@ -76,5 +76,14 @@ async function invoke(code) { await vm.runInContext(code, context); }
   await invoke("credential('e')");
   assert.equal(element('eKey').value, '');
   assert.equal(calls.at(-1).route, 'config');
-  console.log('Setup credential UI checks passed');
+  element('gName').value = 'worker';
+  element('gHTTP').value = 'http://127.0.0.1:8080\n  https://app.example  \n';
+  await invoke('saveAgent()');
+  const savedAgent = calls.filter(c => c.route === 'config').at(-1).body.agents.worker;
+  assert.deepEqual(Array.from(savedAgent.http_origins), ['http://127.0.0.1:8080', 'https://app.example']);
+  element('gSaved').value = 'worker';
+  element('gHTTP').value = '';
+  await invoke("$('gSaved').onchange()");
+  assert.equal(element('gHTTP').value, 'http://127.0.0.1:8080\nhttps://app.example');
+  console.log('Setup credential and HTTP policy UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

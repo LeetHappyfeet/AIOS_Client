@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic import Field
 
-from .tools import files, git, processes
+from .tools import files, git, network, output, processes, results
 from .tools.registry import Registry
 
 EXCLUDED = files.EXCLUDED
@@ -25,6 +25,8 @@ class Workspace:
         command_timeout=120,
         on_event=lambda *args: None,
         process_backend=None,
+        http_origins=(),
+        http_transport=None,
     ):
         self.root = Path(root).expanduser().resolve(strict=True)
         if not self.root.is_dir():
@@ -39,10 +41,17 @@ class Workspace:
         )
         self.process_manager.command_timeout = command_timeout
         self.git = git.GitTools(self)
+        self.output_tools = output.OutputTools(self)
+        self.http_tools = network.HTTPTools(self, http_origins, http_transport)
+        self.published_result = None
+        self.result_tools = results.ResultTools(self)
         self.registry = Registry(self.guard, self.bound_result)
         files.register(self.registry, self.filesystem)
         processes.register(self.registry, self.process_manager)
         git.register(self.registry, self.git)
+        output.register(self.registry, self.output_tools)
+        network.register(self.registry, self.http_tools)
+        results.register(self.registry, self.result_tools)
         self.registry.add(
             "host_info",
             self.host_info,
@@ -121,6 +130,18 @@ class Workspace:
                     "status",
                     "knowledge_revision",
                     "next_cursor",
+                    "next_line",
+                    "search_complete",
+                    "process_id",
+                    "exit_code",
+                    "output_complete",
+                    "capture_truncated",
+                    "scan_truncated",
+                    "timed_out",
+                    "cancelled",
+                    "counts_complete",
+                    "status_code",
+                    "http_success",
                     "limit_reason",
                     "scanned",
                     "skipped",
@@ -151,6 +172,7 @@ class Workspace:
                 {t.capability for t in self.registry.tools.values()}
             ),
             "tool_protocol": 1,
+            "http_origins": sorted(self.http_tools.origins),
         }
 
     def read_artifact(

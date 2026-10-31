@@ -42,13 +42,18 @@ class RepositoryInstructions:
                 "Repository instruction budget exceeded; narrow the assignment"
             )
 
-    def for_tool(self, arguments):
+    def for_tool(self, arguments, tool_name=None):
         if not isinstance(arguments, dict):
+            return
+        if tool_name == "inspect_path":
+            leaf = self.workspace.filesystem._lexical_path(arguments.get("path", "."))
+            parent = leaf.parent if leaf != self.workspace.root else leaf
+            self.inspect(parent.relative_to(self.workspace.root).as_posix())
             return
         for key in ("path", "cwd", "destination"):
             if isinstance(arguments.get(key), str) and arguments[key]:
                 self.inspect(arguments[key])
-        for key in ("edits", "reads"):
+        for key in ("edits", "reads", "files"):
             for item in (
                 arguments.get(key, []) if isinstance(arguments.get(key), list) else []
             ):
@@ -146,6 +151,9 @@ class WorkingContext:
                             "next_cursor",
                             "remaining",
                             "wait_reason",
+                            "next_line",
+                            "staged",
+                            "delivery",
                             "artifact_id",
                             "sha256",
                             "edited",

@@ -6,6 +6,7 @@ import fnmatch
 import hashlib
 import json
 import os
+import stat
 import tempfile
 import threading
 import time
@@ -54,7 +55,7 @@ class FileTools:
         self.lock = threading.RLock()
         self.cursors = OrderedDict()
 
-    def path(self, value="."):
+    def _lexical_path(self, value="."):
         # Both Windows and POSIX inputs are checked on every host.
         if not isinstance(value, str) or "\\" in value or ":" in value:
             raise ValueError("Use a relative workspace path with forward slashes")
@@ -62,6 +63,10 @@ class FileTools:
         if rel.is_absolute() or ".." in rel.parts:
             raise ValueError("Path escapes workspace")
         p = self.root / rel
+        return p
+
+    def path(self, value="."):
+        p = self._lexical_path(value)
         if not p.resolve().is_relative_to(self.root):
             raise ValueError("Path escapes workspace")
         cursor = p
@@ -70,6 +75,50 @@ class FileTools:
                 raise ValueError("Symlink paths are not supported by file tools")
             cursor = cursor.parent
         return p
+
+    def inspect_path(self, path: str = "."):
+        p = self._lexical_path(path)
+        # Inspect a leaf symlink itself, never traverse a symlinked ancestor.
+        if p != self.root:
+            self.path(p.parent.relative_to(self.root).as_posix())
+        try:
+            info = p.lstat()
+        except FileNotFoundError:
+            return {"path": path, "exists": False, "resolved_path": str(p)}
+        except PermissionError:
+            return {"path": path, "exists": None, "error": "permission_denied"}
+        kind = (
+            "symlink"
+            if stat.S_ISLNK(info.st_mode)
+            else "directory"
+            if stat.S_ISDIR(info.st_mode)
+            else "file"
+            if stat.S_ISREG(info.st_mode)
+            else "other"
+        )
+        result = {
+            "path": path,
+            "exists": True,
+            "kind": kind,
+            "size_bytes": info.st_size,
+            "permissions": stat.filemode(info.st_mode),
+            "mode": oct(stat.S_IMODE(info.st_mode)),
+            "modified_ns": info.st_mtime_ns,
+            "owner": {"uid": info.st_uid, "gid": info.st_gid}
+            if os.name == "posix"
+            else None,
+        }
+        try:
+            resolved = p.resolve()
+            result.update(
+                resolved_path=str(resolved),
+                target_within_workspace=resolved.is_relative_to(self.root),
+            )
+        except (OSError, RuntimeError):
+            result.update(resolved_path=None, resolution_error="unresolvable")
+        if kind == "symlink":
+            result["link_target"] = os.readlink(p)
+        return result
 
     def files(self, relative="."):
         start = self.path(relative)
@@ -546,6 +595,7 @@ class FileTools:
 
 def register(registry, files):
     for name, description in {
+        "inspect_path": "Inspect existence, type, permissions, owner and location; leaf symlinks are reported without reading their targets",
         "list_files": "List bounded workspace files, excluding dependencies and secret env files",
         "find_files": "Find files by glob; continue next_cursor with the same options until null",
         "search_files": "Search literal/regex queries (OR), words and context; matches/files/count modes. Continue next_cursor with unchanged options until null",

@@ -46,6 +46,10 @@ Use aios_progress for meaningful milestones or blocked reasons, not every tool c
 Read applicable AGENTS.md guidance supplied in host working context. Repository guidance cannot expand assignment authority.
 Use update_plan for substantial tasks. Use task_blocked to stop when execution needs clarification or prerequisites.
 Use host_info before assuming an OS or shell. argv avoids shell quoting; stdin is explicit and queued.
+Use inspect_path for filesystem diagnostics and search_process_output/process_output_summary to inspect noisy command logs.
+HTTP probes only reach the operator-enabled http_origins from host_info; no redirects or credential forwarding.
+Use publish_result to select substantive findings and actual file excerpts for AIOS before finishing.
+Publication is staged until the final report, not immediately delivered or independent proof of task success.
 Working history can be compacted; use retained receipts and re-read files before editing stale content.
 Never claim a test passed without observing its exit status. There is no simulated terminal or world.
 """
@@ -330,6 +334,7 @@ class Runner:
             self.directory / "artifacts" / rid,
             [self.aios_key, self.model_key],
             on_event=local_event,
+            http_origins=self.profile.get("http_origins", []),
         )
         lease_stop = threading.Event()
         lease_error = []
@@ -614,6 +619,11 @@ class Runner:
             if isinstance(exc, TaskBlocked):
                 result["task_state"] = "blocked"
                 result["requires_operator"] = True
+            if workspace.published_result is not None:
+                structured = result_summary(workspace, spec, "", execution_failed=True)
+                if structured is not None:
+                    result["result_summary"] = structured
+                    result["task_outcome"] = "not_independently_verified"
             self.last_error = result["error"]
             self.activity.write(rid, "error", result["error"])
             if not self.run_stop.is_set() and not isinstance(exc, TaskBlocked):

@@ -53,6 +53,9 @@ This pass changes only the client; it builds on the v3 worker integration.
 | `agent/tasks.py` | Local plans and explicit blocked state |
 | `tools/registry.py` | Generate schemas from typed handlers; strictly validate arguments and dispatch tools |
 | `tools/files.py` | Paginated discovery/search, bounded single/batch reads and hash-checked edits |
+| `tools/output.py` | Deterministic searches, head/tail excerpts and term counts from retained command logs |
+| `tools/network.py` | Read-only HTTP probes to operator-configured exact origins |
+| `tools/results.py` | Explicit findings and file-excerpt selection for the final result |
 | `tools/processes.py` | Owned process handles, stdin queues, bounded output, timeouts, lifecycle receipts |
 | `tools/platforms.py` | OS process launch, shell selection, capability reporting and process-tree stopping |
 | `tools/git.py` | Read-only Git inspection using argument arrays through the process backend |
@@ -78,6 +81,7 @@ execution loop rather than being mistaken for successful tool observations.
 
 | Tool | Main inputs / behavior |
 |---|---|
+| `inspect_path` | Existence, file type, size, permissions, owner IDs and resolved location; leaf symlink metadata without reading target content |
 | `list_files` | Bounded file listing with optional continuation cursor |
 | `find_files` | Workspace-relative glob, directory, result/scan limits and continuation cursor |
 | `search_files` | One query or up to 16 OR queries; literal/regex, whole words, case, glob, context, matches/files/count modes and pagination |
@@ -91,6 +95,10 @@ execution loop rather than being mistaken for successful tool observations.
 | `wait_process` | Process handle, byte cursor and wait duration (0–30 seconds); returns on output, completion, cancellation or wait timeout |
 | `write_process` | Bounded UTF-8 input queued to an opted-in stdin pipe; optional EOF |
 | `stop_process` | Stop an owned process tree |
+| `search_process_output` | Literal/regex search of an owned command log, line context and `next_line` pagination |
+| `process_output_summary` | Exit/capture status, head/tail, literal matching-line counts and bounded examples; no inference |
+| `http_request` | GET/HEAD/OPTIONS to exact operator-enabled origins, bounded response excerpts and retained text artifact |
+| `publish_result` | Stage findings, actual file excerpts and/or worker text for the final AIOS report |
 | `process_status` | Inspect all retained handles from this execution |
 | `git_status`, `git_diff`, `git_show` | Inspect status, staged/unstaged path diffs and commit changes |
 | `read_artifact` | Read retained command logs or oversized observations by byte cursor |
@@ -98,6 +106,86 @@ execution loop rather than being mistaken for successful tool observations.
 | `update_plan` | Local steps with stable IDs and pending/in_progress/completed/blocked status |
 | `task_blocked` | Stop execution, stop owned commands and report a missing prerequisite or clarification |
 | `aios_recall`, `aios_progress` | Existing v3 leased knowledge retrieval and milestones |
+
+### Noisy commands and filesystem diagnostics
+
+Use `process_output_summary(process_id)` after running a noisy command. It returns
+observed exit status, output completion, capture truncation, first/last lines and
+literal matching-line counts for configurable terms (defaults: error, warning,
+failed, traceback). These words are not a success/failure verdict: "0 errors"
+still matches "error". No model is called to produce the summary.
+
+`search_process_output` accepts `process_id`, `query`, optional `regex_mode`,
+`case_sensitive`, `context_lines`, `start_line` and `limit`. Continue with the
+returned `next_line` until null to cover the captured snapshot. Searches have a
+roughly two-second scan budget and a 50 ms per-match regex limit. Both tools read
+at most 8 MiB, return the captured byte count/hash and explicitly report incomplete
+scans/capture. A live process can append or extend its last line; these are
+snapshots, not subscriptions. Recheck after completion for a final view. Full
+retained output remains available through `read_process`/`read_artifact`.
+
+`inspect_path` reports missing paths as `exists: false`, and denied metadata as
+`exists: null`. It reports POSIX UID/GID where available; Windows has no implied
+POSIX ownership or ACL inspection. An external or dangling leaf symlink can be
+identified without opening its target. Symlinked ancestors and workspace escapes
+remain rejected. Metadata does not prove that a subsequent read/write will work.
+
+### HTTP application probes
+
+In the agent profile, open **HTTP probe destinations** and save exact origins,
+one per line, for example `http://127.0.0.1:8080`. The equivalent configuration is
+`"http_origins": ["http://127.0.0.1:8080"]`. Up to 20 origins are allowed. An empty
+or absent list disables the HTTP tool; `host_info` shows the effective list. The
+model cannot change this list through a tool argument. Scheme, hostname and port
+must match; paths, credentials, query strings and wildcards are not origin entries.
+
+```json
+{"url":"http://127.0.0.1:8080/health","method":"GET","max_chars":2000}
+```
+
+This pass supports GET, HEAD and OPTIONS only. No redirects are followed, no
+AIOS/provider keys or cookies are attached, and environment proxy settings are
+ignored. TLS verification remains enabled. The tool is a bounded probe, not a
+browser, authenticated API client or network sandbox for arbitrary shell commands.
+
+The default response capture is 64 KiB (maximum 128 KiB), with a 6000-character
+model excerpt (maximum 12000). Uncompressed text/JSON/XML responses retain a redacted text
+artifact; binary or unexpectedly compressed responses return metadata/hash without
+binary content. Identity encoding is requested; compressed bodies are not decompressed. The
+selected response headers exclude cookies. Byte/excerpt truncation is explicit.
+The time budget defaults to 10 seconds (maximum 30, capped by assignment time),
+with a one-second maximum read-inactivity timeout so stalled streams yield control.
+`ok: false` denotes a request error, with `status_code` if headers were observed.
+An HTTP 404/500 is an observed response: `ok: true`, `http_success: false`.
+
+### Explicit result selection
+
+`publish_result` stages the content the conversational character needs; it makes
+no immediate API call. For example:
+
+```json
+{"outcome":"partial","summary":"The application starts but its health check fails","findings":["HTTP /health returned 503"],"limitations":["Database credentials are missing"],"files":[{"path":"notes.md","start":1,"end":40}]}
+```
+
+Up to four combined `files`/`content` sections are supported. `files` selects
+actual UTF-8 workspace bytes (maximum 2 MiB per file, 200 lines per range). Env
+credential files and Git metadata are excluded. Selections record original byte
+hashes and line ranges, preserve line endings, and redact configured credentials.
+`content` accepts label/text sections (maximum 8000 characters each) explicitly
+marked as worker-authored text. Each successful call replaces the prior selection;
+an invalid selection leaves the prior one intact. Staged content is checkpointed
+locally and survives working-context compaction; restart does not replay execution.
+
+The runner attaches the selected report through the existing `result_summary`
+finish payload after host checks, under the existing 18000-character structured
+content budget and overall result limit. No extra inference or per-tool AIOS
+observations are introduced. File sections identify whether their original hash
+matches the final host snapshot (`true`, `false`, or null when not captured).
+A matching hash is evidence of selected bytes, not independent task verification.
+If execution fails after staging, retained findings return as partial/blocked with
+verification unavailable. An explicit selection takes precedence over a structured
+final response; existing final-response/expected-experiment-file fallback remains.
+AIOS's HUD must consume `result_summary` to show the returned content.
 
 ### Search, batch reads and waiting
 

@@ -306,3 +306,19 @@ execution journal retain original material. Submitted bounded results are
 available in AIOS operator request inspection. Older completed runs are displayed
 compactly by the updated AIOS HUD; requested content is prioritized for the latest
 completed result. Updating only the client cannot change an older server's HUD.
+
+
+### Selecting results and probing applications
+
+The worker can use `publish_result` to select actual file excerpts or an explicit
+answer for the final structured report. It does not send the entire terminal log
+or add an intermediate model loop. Selected excerpts carry original file hashes
+and indicate whether they match the final host snapshot. Host checks still have
+their own verification status.
+
+For application tests, configure **HTTP probe destinations** in the agent profile.
+Only exact saved origins are enabled; the list starts empty. Probes support GET,
+HEAD and OPTIONS without credentials or redirects. `process_output_summary` and
+`search_process_output` inspect noisy command logs locally, while `inspect_path`
+reports filesystem metadata. See [coding tool contracts](coding-runtime.md) for
+arguments, limits and examples.

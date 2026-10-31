@@ -217,6 +217,13 @@ class ConfigStore:
             if not 1 <= float(p.get("timeout", 120)) <= 1800:
                 raise ValueError("Endpoint timeout must be 1–1800 seconds")
         for p in data["agents"].values():
+            from .tools.network import canonical_origin
+
+            origins = p.get("http_origins", [])
+            if type(origins) is not list or len(origins) > 20 or any(type(x) is not str for x in origins):
+                raise ValueError("http_origins must be a list of at most 20 HTTP(S) origins")
+            for origin in origins:
+                canonical_origin(origin, origin_only=True)
             if p.get("protocol_version", "auto") not in ("auto", 2, 3):
                 raise ValueError("protocol_version must be auto, 2, or 3")
             for field in ("origin_instance_id", "link_id"):

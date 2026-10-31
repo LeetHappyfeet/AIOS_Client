@@ -61,6 +61,7 @@ class AgentSession:
                 "seen_calls": sorted(self.seen_calls),
                 "plan": self.tasks.plan,
                 "blocked_reason": self.tasks.blocked,
+                "published_result": self.workspace.published_result,
                 "context": self.context.snapshot(),
             },
         )
@@ -98,6 +99,7 @@ class AgentSession:
                 "plan_explanation": self.tasks.explanation,
                 "processes": process_state,
                 "host": self.workspace.host_info(),
+                "result_staged": self.workspace.published_result is not None,
             }
             messages = self.context.prepare()
             presented_guidance = {
@@ -179,7 +181,7 @@ class AgentSession:
                     if not isinstance(raw, str) or len(raw) > 250000:
                         raise ToolArguments("Tool arguments exceed the message limit")
                     args = json.loads(raw)
-                    self.instructions.for_tool(args)
+                    self.instructions.for_tool(args, name)
                     tool = self.registry.tools.get(name)
                     unseen = [
                         path
