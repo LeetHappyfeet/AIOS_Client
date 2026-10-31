@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from pathlib import PurePosixPath
 from typing import Literal
 from uuid import UUID
@@ -12,6 +13,20 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
+
+
+def requires_read_only(objective):
+    """Recognize explicit restrictions; this can only reduce tool authority.
+
+    Natural language is not a general policy language. These phrases cover the
+    supported inspection convention without changing the v2/v3 assignment hash.
+    """
+    return bool(re.search(
+        r"\bread[\s-]only\b|\bno file (?:creation|modification)\b|"
+        r"\bwithout creating or modifying (?:any )?files\b|"
+        r"\bdo not (?:create or modify|modify or create) (?:any )?files\b",
+        objective, re.IGNORECASE,
+    ))
 
 
 def relative_path(value):

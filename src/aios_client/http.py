@@ -59,6 +59,12 @@ class API:
 
 
 class Model(API):
+    def __init__(self, *args, max_tokens=4096, **kwargs):
+        if type(max_tokens) is not int or not 128 <= max_tokens <= 32768:
+            raise ValueError("Endpoint max_tokens must be an integer from 128 to 32768")
+        super().__init__(*args, **kwargs)
+        self.max_tokens = max_tokens
+
     def models(self):
         return [x["id"] for x in self.request("GET", "models").get("data", [])]
 
@@ -73,14 +79,26 @@ class Model(API):
                 "tools": tools,
                 "tool_choice": "auto",
                 "stream": False,
-                "max_tokens": 2048,
+                "max_tokens": self.max_tokens,
             },
         )
         try:
             message = d["choices"][0]["message"]
-            if message.get("role") != "assistant":
+            if not isinstance(message, dict) or message.get("role") != "assistant":
                 raise ValueError()
-            return message
+            choice = d["choices"][0]
+            usage = d.get("usage")
+            usage = usage if isinstance(usage, dict) else {}
+            # Keep diagnostics out of messages sent back to the provider. Never
+            # retain headers, credentials or arbitrary provider response fields.
+            return {**message, "_diagnostics": {
+                "finish_reason": choice.get("finish_reason")[:80]
+                if isinstance(choice.get("finish_reason"), str) else None,
+                "max_tokens": self.max_tokens,
+                "usage": {k: usage[k] for k in (
+                    "prompt_tokens", "completion_tokens", "total_tokens"
+                ) if type(usage.get(k)) is int},
+            }}
         except (KeyError, IndexError, TypeError, ValueError):
             raise RuntimeError("Model returned an invalid assistant message") from None
 
@@ -104,6 +122,7 @@ class Model(API):
             [tool],
         )
         try:
+            assert m.get("_diagnostics", {}).get("finish_reason") not in {"length", "content_filter"}
             calls = m["tool_calls"]
             assert len(calls) == 1 and calls[0]["function"]["name"] == "connection_test"
             assert json.loads(calls[0]["function"]["arguments"]) == {"value": "ok"}

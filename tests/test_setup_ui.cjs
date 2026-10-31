@@ -41,7 +41,7 @@ async function invoke(code) { await vm.runInContext(code, context); }
     aName: 'AIOS', aHost: '192.0.2.1', aPort: '8000', aScheme: 'http',
     aStorage: 'file', aKey: 'workspace-fixture-key',
     eName: 'DeepSeek', eURL: 'https://model.example/v1', eModel: 'fixture-model',
-    eTimeout: '120', eStorage: 'file', eKey: 'provider-fixture-key',
+    eTimeout: '120', eMaxTokens: '8192', eStorage: 'file', eKey: 'provider-fixture-key',
   })) element(id).value = value;
   await invoke('saveAIOS()');
   await invoke('saveEndpoint()');
@@ -51,6 +51,7 @@ async function invoke(code) { await vm.runInContext(code, context); }
   assert.equal(element('eKey').value, '');
   assert.equal(element('aSaved').value, 'AIOS');
   assert.equal(element('eSaved').value, 'DeepSeek');
+  assert.equal(vm.runInContext('config.endpoints.DeepSeek.max_tokens', context), 8192);
   for (const call of calls.filter(c => c.route === 'config')) {
     assert.ok(!JSON.stringify(call.body).includes('fixture-key'));
   }

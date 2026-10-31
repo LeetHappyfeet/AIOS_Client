@@ -212,6 +212,8 @@ class ConfigStore:
                 raise ValueError("Configure only the worker credential in the client")
         for p in data["endpoints"].values():
             base_url(p["base_url"])
+            if type(p.get("max_tokens", 4096)) is not int or not 128 <= p.get("max_tokens", 4096) <= 32768:
+                raise ValueError("Endpoint max_tokens must be an integer from 128 to 32768")
             if not 1 <= int(p.get("concurrency", 1)) <= 16:
                 raise ValueError("Endpoint concurrency must be 1–16")
             if not 1 <= float(p.get("timeout", 120)) <= 1800:

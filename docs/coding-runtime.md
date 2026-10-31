@@ -363,3 +363,36 @@ The test suite exercises real temporary files, Git operations, argv/stdin/proces
 termination and scripted model/AIOS endpoints. CI runs the same suite on Windows
 and Ubuntu with Python 3.11/3.12. It does not establish production model reliability,
 full terminal support or system administration readiness.
+## Inspection and provider-response diagnostics
+
+Explicit `read-only`, `read only`, `no file creation or modification`, and
+`without creating or modifying any files` restrictions select a conservative
+inspection mode. This convention only reduces authority; it is not a general
+natural-language policy parser. The client hides and rejects write tools,
+arbitrary commands/stdin, Git subprocesses, and HTTP probes. `inspect_environment`
+collects OS/kernel, workspace path, effective identity, candidate directory access,
+disk space and common tool paths using fixed host APIs. It does not create test
+files or invoke sudo. Tool versions and sudo privileges remain unknown unless
+separately authorized and observed. File reads and direct JSON/text results are
+supported; client journals and audit artifacts still persist outside task output.
+
+Update AIOS together with the client: its standard `workspace / experimental_task`
+profile now uses a direct final JSON response for read-only requests instead of
+requiring an on-disk experiment report. Existing queued assignments retain their
+original contract; conflicting output/check requirements fail explicitly. Submit
+a fresh request after updating. Custom operator checks are not silently removed.
+
+Generation endpoint **Maximum response tokens** (`max_tokens` in configuration)
+defaults to 4096 and accepts 128–32768. Set it within the provider/model's supported
+limit. Each model step journals `model_response` with finish reason, available
+token usage, configured output limit, and a redacted response excerpt capped at
+16000 characters. Credentials and HTTP headers are not included. Local diagnostic
+excerpts are not sent to AIOS as memories.
+
+A response with `finish_reason=length` executes none of its tool calls. Empty or
+malformed final JSON responses also trigger a request for a smaller complete
+response. Recovery is limited to two attempts within the assignment's existing
+step/time budgets; earlier completed tool calls are not replayed by the client.
+Malformed tool arguments remain explicit tool errors. Failed runs send a bounded
+set of partial tool observations plus the failure reason and final response
+metadata, without asserting task completion or successful host verification.

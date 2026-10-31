@@ -10,7 +10,7 @@ from uuid import uuid4
 
 from pydantic import Field
 
-from .tools import files, git, network, output, processes, results
+from .tools import files, git, inspection, network, output, processes, results
 from .tools.registry import Registry
 
 EXCLUDED = files.EXCLUDED
@@ -44,6 +44,8 @@ class Workspace:
         self.output_tools = output.OutputTools(self)
         self.http_tools = network.HTTPTools(self, http_origins, http_transport)
         self.published_result = None
+        self.partial_findings = []
+        self.model_diagnostics = {}
         self.result_tools = results.ResultTools(self)
         self.registry = Registry(self.guard, self.bound_result)
         files.register(self.registry, self.filesystem)
@@ -52,6 +54,11 @@ class Workspace:
         output.register(self.registry, self.output_tools)
         network.register(self.registry, self.http_tools)
         results.register(self.registry, self.result_tools)
+        self.registry.add(
+            "inspect_environment", self.inspect_environment,
+            "Inspect workspace, OS/kernel, identity, tool paths and disk space without shell commands, sudo probes or test files",
+            "host.inspect",
+        )
         self.registry.add(
             "host_info",
             self.host_info,
@@ -169,11 +176,15 @@ class Workspace:
             **self.process_manager.backend.capabilities(),
             "workspace": str(self.root),
             "tool_capabilities": sorted(
-                {t.capability for t in self.registry.tools.values()}
+                {t.capability for t in self.registry.tools.values() if self.registry.permitted(t)}
             ),
             "tool_protocol": 1,
             "http_origins": sorted(self.http_tools.origins),
+            "read_only_inspection": self.registry.read_only,
         }
+
+    def inspect_environment(self):
+        return inspection.inspect_environment(self.root)
 
     def read_artifact(
         self,

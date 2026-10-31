@@ -6,6 +6,7 @@ import json
 import time
 
 from ..tools.registry import ToolArguments
+from ..assignment import requires_read_only
 from .context import RepositoryInstructions, WorkingContext
 from .tasks import TaskBlocked, TaskTools
 
@@ -37,6 +38,9 @@ class AgentSession:
         self.control, self.gate, self.deadline = control, gate, deadline
         self.progress, self.observe = progress, observe
         self.registry = workspace.registry
+        self.registry.read_only = self.registry.read_only or requires_read_only(spec.objective)
+        if self.registry.read_only:
+            system += "\nRead-only inspection is enforced: use inspect_environment/file reads; return JSON directly without creating files or launching commands."
         self.instructions = RepositoryInstructions(workspace)
         self.context = WorkingContext(
             system,
@@ -48,6 +52,22 @@ class AgentSession:
         self.tasks = TaskTools(self.record, progress, workspace.stop)
         self.tasks.register(self.registry)
         self.seen_calls = set()
+        self.response_recoveries = 0
+
+    def recover_response(self, reason):
+        # A rejected response has executed no calls. Do not put its incomplete
+        # tool-call batch into history or replay an earlier successful batch.
+        self.record("model_response_rejected", {"reason": reason})
+        if self.response_recoveries >= 2:
+            raise ValueError(reason + "; model response recovery limit reached")
+        self.response_recoveries += 1
+        self.context.append({"role": "user", "content": (
+            reason + ". The rejected response executed no tools. Earlier tool receipts remain valid; "
+            "do not repeat completed operations. Return a concise final JSON report using observed "
+            "findings, marking limitations, or one small complete tool call if more evidence is required. "
+            "Do not create a file merely to return your answer."
+        )})
+        self.checkpoint()
 
     def record(self, kind, body):
         self.journal.event(self.run_id, kind, self.workspace.clean(body))
@@ -122,6 +142,19 @@ class AgentSession:
             finally:
                 self.gate.release()
             self.check()
+            diagnostics = response.get("_diagnostics") or {}
+            diagnostics = diagnostics if isinstance(diagnostics, dict) else {}
+            self.workspace.model_diagnostics = self.workspace.clean(diagnostics)
+            raw = json.dumps(self.workspace.clean({k: response.get(k) for k in ("content", "tool_calls")}), ensure_ascii=True)
+            self.record("model_response", {
+                "step": step + 1, **diagnostics,
+                "message_excerpt": raw[:16000], "message_truncated": len(raw) > 16000,
+            })
+            if diagnostics.get("finish_reason") == "length":
+                self.recover_response("Provider response reached its output token limit (finish_reason=length)")
+                continue
+            if diagnostics.get("finish_reason") == "content_filter":
+                raise ValueError("Provider stopped the response with finish_reason=content_filter")
             calls = response.get("tool_calls") or []
             if not isinstance(calls, list) or len(calls) > 8:
                 raise ValueError("Model returned an invalid tool-call batch")
@@ -129,6 +162,15 @@ class AgentSession:
                 "role": "assistant",
                 "content": self.workspace.redact(response.get("content") or ""),
             }
+            if not calls and not assistant["content"].strip():
+                self.recover_response("Model returned neither tool calls nor a final report")
+                continue
+            if not calls and assistant["content"].lstrip().startswith("{"):
+                try:
+                    json.loads(assistant["content"])
+                except ValueError:
+                    self.recover_response("Model returned incomplete or malformed final JSON")
+                    continue
             if calls:
                 batch_ids = set()
                 for call in calls:
@@ -165,10 +207,6 @@ class AgentSession:
                         }
                     )
                     continue
-                if not assistant["content"].strip():
-                    raise ValueError(
-                        "Model returned neither tool calls nor a final report"
-                    )
                 self.checkpoint()
                 return assistant["content"]
             for call in calls:
@@ -218,6 +256,14 @@ class AgentSession:
                 self.record(
                     "tool_result", {"id": call_id, "name": name, "result": observation}
                 )
+                if observation.get("ok") and name not in {
+                    "run_command", "update_plan", "publish_result", "aios_progress", "aios_recall",
+                } and observation.get("output_complete", True):
+                    receipt = json.dumps(self.workspace.clean(observation), ensure_ascii=True)
+                    self.workspace.partial_findings = (
+                        self.workspace.partial_findings + [name + ": " + receipt[:650]
+                            + (" [receipt excerpt truncated]" if len(receipt) > 650 else "")]
+                    )[-6:]
                 self.context.append(
                     {
                         "role": "tool",

@@ -202,6 +202,7 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
             p["base_url"],
             store.secrets.get(p.get("secret_ref", "")),
             float(p.get("timeout", 120)),
+            max_tokens=p.get("max_tokens", 4096),
         )
         try:
             return {"models": model.models()}
@@ -218,6 +219,7 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
             p["base_url"],
             store.secrets.get(p.get("secret_ref", "")),
             float(p.get("timeout", 120)),
+            max_tokens=p.get("max_tokens", 4096),
         )
         try:
             return model.test_tools(p["model"])

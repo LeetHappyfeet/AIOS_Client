@@ -40,6 +40,18 @@ class Registry:
     def __init__(self, guard=lambda: None, bound=lambda result: result):
         self.tools = {}
         self.guard, self.bound = guard, bound
+        self.read_only = False
+
+    def permitted(self, tool):
+        if not self.read_only:
+            return True
+        # Arbitrary shell, stdin, HTTP and Git subprocesses can all mutate the
+        # host. A fixed inspection tool replaces shell probes in this mode.
+        return ((tool.effect == "read" and tool.capability in {
+            "workspace.files", "workspace.artifacts", "host.inspect",
+        }) or tool.name in {
+            "publish_result", "update_plan", "task_blocked", "aios_recall", "aios_progress",
+        })
 
     def add(self, name, handler, description, capability="coding", effect="read"):
         if not re.fullmatch(r"[a-z][a-z0-9_]{0,63}", name) or name in self.tools:
@@ -70,13 +82,15 @@ class Registry:
         )
 
     def catalog(self):
-        return [tool.schema() for tool in self.tools.values()]
+        return [tool.schema() for tool in self.tools.values() if self.permitted(tool)]
 
     def execute(self, name, arguments):
         self.guard()
         if name not in self.tools or not isinstance(arguments, dict):
             raise ToolArguments("Unknown tool or invalid arguments")
         tool = self.tools[name]
+        if not self.permitted(tool):
+            raise ToolArguments("Read-only inspection policy forbids this tool; use inspect_environment and return findings directly")
         try:
             values = tool.arguments.model_validate(arguments)
         except ValidationError as exc:
