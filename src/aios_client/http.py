@@ -6,9 +6,9 @@ import httpx
 
 
 class APIError(RuntimeError):
-    def __init__(self, status, method, path):
+    def __init__(self, status, method, path, detail=''):
         self.status = status
-        super().__init__(f"API returned HTTP {status} for {method} {path}")
+        super().__init__(f"API returned HTTP {status} for {method} {path}" + (f": {detail}" if detail else ''))
 
 
 class APIUnavailable(RuntimeError):
@@ -38,7 +38,20 @@ class API:
             return r.json()
         except httpx.HTTPStatusError as exc:
             # Do not log arbitrary response bodies (providers can echo credentials/prompts).
-            raise APIError(exc.response.status_code, method, path) from None
+            detail = ''
+            # Only setup conflicts from AIOS have a bounded, redacted detail exposed.
+            # Provider responses and other routes retain their generic error behavior.
+            if not isinstance(self, Model) and exc.response.status_code == 409 and path.lstrip('/') in {
+                'workspace-client/bind', 'workspace-client/registrations'}:
+                try:
+                    value = exc.response.json().get('detail')
+                    if isinstance(value, str):
+                        if self.key:
+                            value = value.replace(self.key, '[REDACTED]')
+                        detail = ' '.join(value.split())[:600]
+                except (ValueError, AttributeError):
+                    pass
+            raise APIError(exc.response.status_code, method, path, detail) from None
         except (httpx.HTTPError, json.JSONDecodeError):
             raise APIUnavailable(
                 f"API connection or JSON response failed for {method} {path}"

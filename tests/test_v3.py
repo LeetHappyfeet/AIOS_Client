@@ -414,8 +414,7 @@ def test_pairing_and_worker_only_credentials(tmp_path, monkeypatch):
     c = config(tmp_path)
     agent = c["agents"]["worker"]
     agent.update(link_id=str(uuid4()), origin_instance_id=agent["instance_id"])
-    with pytest.raises(ValueError, match="dedicated"):
-        ConfigStore.validate(c)
+    ConfigStore.validate(c)  # Attached workspaces use the conversation instance directly.
     agent["origin_instance_id"] = str(uuid4())
     agent["share_memory"] = True
     ConfigStore.validate(c)

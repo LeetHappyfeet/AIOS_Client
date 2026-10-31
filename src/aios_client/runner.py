@@ -137,6 +137,15 @@ class Runner:
         self.protocol_version = negotiate(protocol, requested)
         p = self.profile
         root = str(Path(p["workspace"]).expanduser().resolve(strict=True))
+        if p.get('routing_mode', 'manual') == 'automatic':
+            if self.protocol_version != 3 or 'persistent-workspaces-v1' not in protocol.get('capabilities', []):
+                raise ValueError('Update AIOS and apply the workspace-registration migration for Automatic chat routing; no manual fallback was attempted')
+            key = hashlib.sha256(json.dumps(
+                [p['character_id'], p['user_name'], p['scope_key'], root, p['username']],
+                separators=(',', ':')).encode()).hexdigest()
+            return self.api.request('POST', 'workspace-client/registrations', json={
+                'workspace_key': key, 'worker_key': p['username'], 'character_id': p['character_id'],
+                'user_name': p['user_name'], 'scope_key': p['scope_key'], 'root_hint': root})
         key = hashlib.sha256(
             f"{p['instance_id']}:{root}:{p['username']}".encode()
         ).hexdigest()
@@ -210,13 +219,24 @@ class Runner:
                 raise ValueError(
                     "Submit linked assignments in AIOS with the separate operator credential; use serve here"
                 )
+            automatic = self.profile.get('routing_mode', 'manual') == 'automatic'
+            if automatic and objective:
+                raise ValueError('Automatic workspaces receive tasks from AIOS; use Listen for AIOS work')
             binding = self.binding()
-            bid = binding["binding_id"]
+            registration_id = binding.get('registration_id') if automatic else None
+            bid = binding.get('binding_id')
             retained = self.journal.claims()
+            allowed_bindings = set()
+            if automatic and retained:
+                rows = self.api.request('GET', 'workspace-client/v3/bindings',
+                    params={'character_id': self.profile['character_id']})['bindings']
+                allowed_bindings = {x['binding_id'] for x in rows if
+                    all(x[k] == binding[k] for k in ('worker_key','character_id','user_name','scope_key','root_hint'))
+                    and x.get('registration_id') in (None, registration_id)}
             for old in retained:
                 if (
                     old["server_url"] != str(self.api.http.base_url)
-                    or old["binding_id"] != bid
+                    or (old['binding_id'] not in allowed_bindings if automatic else old['binding_id'] != bid)
                 ):
                     raise ValueError(
                         "Retained runs belong to another server/binding; reconcile before changing this profile"
@@ -261,14 +281,23 @@ class Runner:
                 try:
                     # Retry only persisted reports and polling, never workspace operations.
                     self.journal.flush(self.api)
-                    claimed = self.api.request(
-                        "POST",
-                        f"workspace-client/{bid}/claim",
-                        json={
-                            "worker_key": self.profile["username"],
-                            "protocol_version": self.protocol_version,
-                        },
-                    )["run"]
+                    if automatic:
+                        receipt = self.api.request('POST',
+                            f'workspace-client/registrations/{registration_id}/claim',
+                            json={'worker_key': self.profile['username']})
+                        claimed = receipt['run']
+                        if claimed:
+                            bid = receipt['binding_id']
+                        listener_status = receipt.get('status', 'listening')
+                        if listener_status != getattr(self, 'listener_status', None):
+                            self.activity.write('listener', 'status',
+                                'Needs one-time authorization in AIOS Workspace Delegation' if listener_status == 'needs_authorization' else listener_status)
+                        self.listener_status = listener_status
+                    else:
+                        claimed = self.api.request(
+                            'POST', f'workspace-client/{bid}/claim',
+                            json={'worker_key': self.profile['username'], 'protocol_version': self.protocol_version},
+                        )['run']
                 except (APIUnavailable, APIError) as exc:
                     if not serve or (
                         isinstance(exc, APIError)

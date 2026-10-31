@@ -74,3 +74,13 @@ cancel work. A finished run alone does not mean its checks passed.
 - [Credentials, logs, CLI commands, and verification](docs/client-reference.md)
 - [AIOS pairing and delegation](docs/v3-integration.md)
 - [Runtime tools and development](docs/coding-runtime.md)
+
+### New chats without manual pairing
+
+With an updated AIOS server and its workspace-registration migration, select
+**Automatic chat routing** in the client. Save the character, human routing key,
+workspace and connections, then **Register / validate workspace** and **Listen for
+AIOS work**. Authorize that registered workspace once in AIOS Gradio → Workspace
+Delegation. Future matching chats attach automatically; no session/instance/link
+UUID copying is required. Existing manual profiles are preserved. See
+[automatic routing](docs/client-reference.md#automatic-routing-for-new-chats).

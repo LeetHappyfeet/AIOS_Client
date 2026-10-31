@@ -112,9 +112,14 @@ its saved password remains required.
 2. **Model:** enter the provider's OpenAI-compatible base URL and exact model ID,
    choose Private local file, paste its key and Save endpoint. Load models if supported,
    then test tools. A generation/tool probe can incur provider charges.
-3. **Agent:** choose a profile name and worker label, the exact stored AIOS character
-   ID, and a writable project directory. Find sessions and explicitly select the
-   dedicated execution session. Save agent, then Validate binding.
+3. **Agent:** choose Automatic chat routing, enter the character ID, exact human
+   routing key, scope (normally `conversation`), worker label and writable workspace.
+   Save, **Register / validate workspace**, then **Listen for AIOS work**.
+4. **AIOS:** in Gradio Workspace Delegation, refresh registered workspaces, select
+   this worker/path and authorize it for current and future chats once. Choose its
+   standing execution policy. New matching chats attach automatically without UUIDs.
+   Update AIOS and run its normal migrator first; this requires
+   `20261031_01_workspace_registrations.sql`. Existing manual profiles remain supported.
 
 References are under Advanced and are filled automatically. Local keys use owner-only,
 unencrypted files under `client.json.credentials/`. They survive reboots and are not
@@ -124,13 +129,11 @@ AIOS itself still needs the matching worker key configured in its own launch set
 The installer does not modify your AIOS server or database.
 
 One Linux account and saved connection/model can serve several character profiles.
-Character IDs, routing users, sessions and instances remain distinct from Linux users.
-There is no general character-list API in the inspected AIOS version: this client
-retains exact-ID session discovery. No sessions means you must verify the ID and prepare
-an active execution session through AIOS. The installer does not invent or create
-character/session IDs, environment links, or server-side permissions. Keep the
-conversational origin separate from the linked execution instance as documented in
-[v3 integration](v3-integration.md).
+Character IDs and human routing keys are distinct from Linux users. Automatic routing
+needs no session discovery or link copying; it grants no authority until enabled in
+AIOS. Existing manual profiles can opt in while preserving worker/path identity.
+See [automatic routing](client-reference.md#automatic-routing-for-new-chats) for migration,
+revocation and legacy-conflict behavior.
 
 ## Diagnose and verify
 

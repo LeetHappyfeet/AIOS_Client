@@ -242,6 +242,11 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
         runner = Runner(store, data["agent"])
         try:
             b = runner.binding()
+            if 'registration_id' in b:
+                return {'ok': True, 'registration_id': b['registration_id'],
+                        'authorized': b['enabled'], 'protocol_version': runner.protocol_version,
+                        'status': 'Registered; start listening. Authorize once in AIOS Workspace Delegation.' if not b['enabled']
+                                  else 'Authorized; new matching chats attach automatically.'}
             return {
                 "ok": True,
                 "binding_id": b["binding_id"],
@@ -281,6 +286,8 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
                         "active": name in manager.running
                         and manager.running[name][1].is_alive(),
                         "error": manager.errors.get(name),
+                        "listener_status": getattr(manager.running[name][0], 'listener_status', None)
+                            if name in manager.running else None,
                         "runs": journal.status(),
                         "log_path": str(agent_dir(store, name) / "activity.log"),
                     }

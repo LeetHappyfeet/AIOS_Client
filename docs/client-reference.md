@@ -46,13 +46,12 @@ workspace file checks are not a shell sandbox.
 1. Save an **AIOS connection**: host/IP, port, HTTP/HTTPS and optional base path.
 2. Save a **generation endpoint**: complete base URL (usually ending in `/v1`), model ID,
    request timeout, and optional API key reference. Load models or enter an ID manually.
-3. Save an **agent profile**: username, character ID, workspace, saved connections,
-   and select an existing AIOS session with **Find existing AIOS sessions**. Manual
-   instance/session/user/scope fields remain available under advanced binding settings.
-4. Test the connection, test generation/tool calling, and validate the agent binding.
-5. Enter a bounded coding assignment, required check commands, expected output files,
-   and paths to preserve, then choose **Run task**. **Listen for AIOS work**
-   polls for operator assignments sent through the workspace API. Use **Stop** to cancel.
+3. Save an **agent profile** with Automatic chat routing, worker label, character ID,
+   human routing key, scope, workspace and saved connections. No chat UUID is required.
+4. Test the connection and generation/tool calling, then **Register / validate workspace**.
+5. **Listen for AIOS work** and authorize the registered workspace once in AIOS Gradio
+   Workspace Delegation. New chats attach automatically. Use **Stop** to cancel.
+   Manual instance binding and direct **Run task** remain available for legacy workflows.
 
 The client supports **protocol v2 and v3**, preferring v3 when AIOS advertises its
 supported version and all v3 capabilities. For linked environments apply the v3
@@ -67,12 +66,42 @@ Set `AIOS_WORKSPACE_API_KEY` on that server. Configure its value in the client's
 connection, separately from your model API key. Missing/old protocol support is an error,
 not a reason to fall back to unscoped remote execution.
 
-Use an already-active dedicated workspace session in AIOS. The profile never bootstraps
+For legacy manual source-writing mode, use an already-active dedicated workspace session in AIOS. The profile never bootstraps
 or replaces a character. Agent username is a client worker label, not an authentication
 credential. Character ID is the persistent AIOS identity key; instance UUID specifies its
 experiential continuity. The human/routing user key is distinct from the agent username.
-A source-head conflict stops work. Concurrent chat writes to the same instance require
-later session coordination; do not use an actively changing SillyTavern session here.
+A source-head conflict stops legacy source-writing work. Attached and automatic workspaces
+keep work evidence separate and support normal chat turns on the same branch.
+
+## Automatic routing for new chats
+
+Update AIOS, apply its `20261031_01_workspace_registrations.sql` migration through
+its normal migrator, and restart the server before selecting this mode.
+
+In **Agent profile**, choose **Automatic chat routing (recommended)**, enter the
+character ID, exact human routing key, scope (usually `conversation`), worker label,
+workspace directory and saved connections. Save, **Register / validate workspace**,
+then **Listen for AIOS work**. No instance/session/link UUID is needed. The listener
+stays running while awaiting authorization and displays `needs_authorization`.
+
+In AIOS **Workspace Delegation**, refresh registered workspaces, select this
+worker/path, authorize it for current and future chats, choose a standing execution
+policy and save. This is done once per registered workspace. Fresh HUDs for matching
+character/human/scope chats automatically attach and expose the experimental-task
+capability. Per-task approvals still apply when the standing policy requires them.
+The worker receives each task's actual binding and keeps its original chat provenance.
+Chat memories are not merged. One leased run at a time uses the registered workspace.
+
+Existing profiles load in **Manual instance binding (legacy / advanced)**. To opt in,
+stop their listener, keep the worker label and workspace path unchanged, switch to
+Automatic, save and register, then authorize once in AIOS. Matching old bindings are
+adopted without deleting history; conflicting identities, changed timelines, active
+source writers and revoked links require explicit reconciliation. Changing labels or
+paths does not overwrite existing bindings. Do not start a second manual listener.
+Automatic mode receives assignments from AIOS; direct **Run task** is for manual mode.
+The server must advertise `persistent-workspaces-v1`; there is no silent fallback to
+manual binding. Specific bounded AIOS binding-conflict messages are shown with known
+worker credentials redacted; provider error bodies remain hidden.
 
 ## Console visibility and logs
 

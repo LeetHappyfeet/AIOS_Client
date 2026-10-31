@@ -226,6 +226,13 @@ class ConfigStore:
                 canonical_origin(origin, origin_only=True)
             if p.get("protocol_version", "auto") not in ("auto", 2, 3):
                 raise ValueError("protocol_version must be auto, 2, or 3")
+            routing = p.get('routing_mode', 'manual')
+            if routing not in ('manual', 'automatic'):
+                raise ValueError('routing_mode must be manual or automatic')
+            if routing == 'automatic' and (p.get('link_id') or p.get('origin_instance_id') or p.get('share_memory')):
+                raise ValueError('Automatic routing does not use manual links or memory sharing')
+            if routing == 'automatic' and p.get('protocol_version') == 2:
+                raise ValueError('Automatic routing requires protocol v3')
             for field in ("origin_instance_id", "link_id"):
                 if p.get(field):
                     UUID(p[field])
@@ -235,10 +242,6 @@ class ConfigStore:
                 )
             if p.get("link_id") and p.get("protocol_version") == 2:
                 raise ValueError("Environment links require protocol v3")
-            if p.get("origin_instance_id") == p.get("instance_id"):
-                raise ValueError(
-                    "Use a dedicated execution instance, separate from the origin"
-                )
             if type(p.get("share_memory", False)) is not bool:
                 raise ValueError("share_memory must be a boolean")
             if p.get("share_memory") and not p.get("link_id"):
@@ -248,8 +251,9 @@ class ConfigStore:
             for field, group in (("aios", "aios"), ("endpoint", "endpoints")):
                 if p.get(field) not in data[group]:
                     raise ValueError(f"Unknown {field} profile")
-            for field in ("instance_id", "session_id"):
-                UUID(p[field])
+            if routing == 'manual':
+                for field in ("instance_id", "session_id"):
+                    UUID(p[field])
             for field in (
                 "username",
                 "character_id",
