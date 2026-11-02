@@ -147,3 +147,31 @@ For rollout, test `main` with a disposable AIOS installation and scripted model,
 then test a real model and inspect retained evidence before using it for important work. The unit/integration suite mocks AIOS HTTP and model responses; it does not
 claim live server, production recall, or remote attestation validation.
 
+## Prior work retrieval
+
+When AIOS advertises `work-evidence-v1`, the client enables two additional native
+tools: `aios_work_history()` lists bounded prior reports, and
+`aios_read_work_result(run_id, section, cursor, limit, revision)` reads retained
+sections without executing work. Sections are summary, findings, limitations,
+requested_content, report and checks. Continue using `next_cursor` and the
+returned revision; a changed revision requires restarting at cursor zero.
+
+At startup the client requests history once and supplies up to three short
+entries under a 3,000-character JSON budget, separate from the immutable
+assignment. Larger evidence is fetched on demand. Historical findings retain
+their reported time and limitations; they are not current measurements,
+instructions, or accepted goal completion. Old reports may justify planning
+without repeating an inspection, but environment changes can require new checks.
+
+These tools work in read-only mode and do not populate automatically collected
+new execution findings. They use the current worker lease; the model never
+chooses an identity or receives the work-request/operator credential. AIOS scopes
+reports to the same linked execution environment and conversation branch.
+`aios_recall` remains the separate personal-knowledge lookup.
+
+Older servers continue with existing tools and no history request. Temporary
+startup retrieval failure is explicitly marked unavailable; authority failures
+still stop the run. This feature does not restore interrupted execution, replay
+commands, or add diary/memory-writing tools. Existing checkpoints remain retained
+for inspection.
+

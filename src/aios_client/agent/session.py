@@ -258,6 +258,7 @@ class AgentSession:
                 )
                 if observation.get("ok") and name not in {
                     "run_command", "update_plan", "publish_result", "aios_progress", "aios_recall",
+                    "aios_work_history", "aios_read_work_result",
                 } and observation.get("output_complete", True):
                     receipt = json.dumps(self.workspace.clean(observation), ensure_ascii=True)
                     self.workspace.partial_findings = (

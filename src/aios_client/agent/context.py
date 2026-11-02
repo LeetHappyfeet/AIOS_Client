@@ -139,6 +139,9 @@ class WorkingContext:
                             "process_id",
                             "cursor",
                             "artifact_id",
+                            "run_id",
+                            "section",
+                            "revision",
                         )
                     },
                     "result": {
@@ -160,6 +163,10 @@ class WorkingContext:
                             "status",
                             "timed_out",
                             "cancelled",
+                            "revision",
+                            "execution_status",
+                            "evidence_source",
+                            "not_goal_completion",
                         )
                         if k in result
                     },

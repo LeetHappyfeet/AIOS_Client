@@ -51,6 +51,7 @@ class Registry:
             "workspace.files", "workspace.artifacts", "host.inspect",
         }) or tool.name in {
             "publish_result", "update_plan", "task_blocked", "aios_recall", "aios_progress",
+            "aios_work_history", "aios_read_work_result",
         })
 
     def add(self, name, handler, description, capability="coding", effect="read"):
