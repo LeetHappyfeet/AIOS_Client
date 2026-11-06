@@ -178,8 +178,46 @@ still have its matching worker key configured in the server's own launch environ
 
 Default configuration: `~/.config/aios-client/client.json`. Override with the global
 `--config PATH` option. The configuration page can import/export profiles without keys.
-Multiple profiles may share connections. This pass runs one local agent at a time;
-profile separation and endpoint gates provide the basis for later concurrent agents.
+Multiple profiles can share connections and listen simultaneously. Start each saved
+profile with **Listen for AIOS work**; stopping one profile leaves the others running.
+Configure all profiles before starting listeners; editing configuration or credentials
+still requires stopping all active profiles. The UI reuses each endpoint's concurrency
+gate (default one model call at a time), independently of workspace execution locks.
+
+### Shared host and workspace coordination
+
+Use Automatic chat routing for each authorized character. No session, instance or
+link UUID is needed for fresh chats. Each character retains its own standing grant,
+chat attachments, memory scope, journal, processes and results. Sharing a directory
+does not grant access to another character's conversational memory.
+
+Tasks using the same or nested directories take turns. On POSIX, disjoint directories
+can execute concurrently. A profile with administration enabled reserves the entire
+host while executing, including non-elevated steps. On Windows all client tasks on
+that account take turns. Waiting listeners show `waiting_workspace` and do not claim
+task leases until they acquire the local execution locks. Stop remains responsive.
+
+Locks and a persistent environment UUID are shared by all client configurations
+running under the same OS account: `~/.cache/aios-client/coordination` on POSIX,
+`%LOCALAPPDATA%/aios-client/coordination` on Windows (home directory fallback).
+These are cooperative client locks, not a sandbox, protection from other users,
+or coordination with arbitrary external processes. Shell operations outside the
+workspace, detached processes, and external writers still require operator coordination.
+Do not copy the environment identity to a different machine or delete coordination
+files while clients are running. Endpoint gates apply within one UI manager; separate
+CLI processes do not share inference concurrency gates.
+
+For server coordination across character registrations, update AIOS, apply
+`20261106_01_shared_environments.sql` using its normal migrator, and restart it before
+upgrading/restarting clients. AIOS advertises `shared-environments-v1`; clients then
+supply their environment UUID and administration setting. Existing registrations adopt
+the UUID in place when idle, preserving authorization and chat bindings. Changing a
+live registration's coordination settings is rejected. Older clients cannot erase an
+adopted UUID. The UUID identifies a coordination domain, not an authentication secret.
+The server serializes conflicting claims across character registrations and offers
+`POST /workspace-client/registrations/{id}/heartbeat` so waiting workers stay visible.
+Old servers remain usable with local locking, but lack server-wide cross-character
+coordination. Existing manual profiles retain their selected instance binding.
 
 ## Command line
 

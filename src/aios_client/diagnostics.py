@@ -96,7 +96,10 @@ def doctor(store, agent: str, probe_model=False) -> dict:
                     protocol = api.request('GET', 'workspace-client/protocol')
                     if 'persistent-workspaces-v1' not in protocol.get('capabilities', []):
                         raise ValueError('Update AIOS and apply workspace-registration migration')
-                    return 'Automatic routing supported; Register / validate workspace shows authorization status. No session UUID is needed.'
+                    shared = 'shared-environments-v1' in protocol.get('capabilities', [])
+                    return ('Automatic routing supported; Register / validate workspace shows authorization status. No session UUID is needed. '
+                            + ('Shared environment coordination supported.' if shared else
+                               'Update AIOS and apply the shared-environments migration for server coordination across characters; local execution locks remain active.'))
                 data = api.request("GET", "workspace-client/instances", params={"character_id": profile["character_id"]})
                 fields = ("character_id", "instance_id", "session_id", "user_name", "scope_key")
                 if not any(all(x.get(k) == profile[k] for k in fields) for x in data.get("instances", [])):

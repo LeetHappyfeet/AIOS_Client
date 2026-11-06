@@ -84,3 +84,9 @@ AIOS work**. Authorize that registered workspace once in AIOS Gradio → Workspa
 Delegation. Future matching chats attach automatically; no session/instance/link
 UUID copying is required. Existing manual profiles are preserved. See
 [automatic routing](docs/client-reference.md#automatic-routing-for-new-chats).
+
+Multiple saved agents can listen at once, including different characters using the
+same directory. Shared-directory tasks take turns; independent POSIX workspaces can
+run concurrently. Administration-enabled profiles reserve the host during execution.
+See [shared environment setup](docs/client-reference.md#shared-host-and-workspace-coordination)
+for the AIOS migration and upgrade steps.

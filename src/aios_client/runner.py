@@ -14,6 +14,7 @@ from .agent.session import AgentSession
 from .agent.tasks import TaskBlocked
 from .assignment import assignment, requires_read_only
 from .config import aios_url
+from .coordination import environment_id, execution_slot
 from .http import API, APIError, APIUnavailable, Model
 from .journal import Journal
 from .protocol import negotiate
@@ -155,9 +156,14 @@ class Runner:
             key = hashlib.sha256(json.dumps(
                 [p['character_id'], p['user_name'], p['scope_key'], root, p['username']],
                 separators=(',', ':')).encode()).hexdigest()
+            coordination = {}
+            if 'shared-environments-v1' in self.server_capabilities:
+                coordination = {'environment_id': environment_id(),
+                                'administration_enabled': p.get('administration_enabled', False)}
             return self.api.request('POST', 'workspace-client/registrations', json={
                 'workspace_key': key, 'worker_key': p['username'], 'character_id': p['character_id'],
-                'user_name': p['user_name'], 'scope_key': p['scope_key'], 'root_hint': root})
+                'user_name': p['user_name'], 'scope_key': p['scope_key'], 'root_hint': root,
+                **coordination})
         key = hashlib.sha256(
             f"{p['instance_id']}:{root}:{p['username']}".encode()
         ).hexdigest()
@@ -291,47 +297,77 @@ class Runner:
                     self.stop()
                     break
                 try:
-                    # Retry only persisted reports and polling, never workspace operations.
                     self.journal.flush(self.api)
-                    if automatic:
-                        receipt = self.api.request('POST',
-                            f'workspace-client/registrations/{registration_id}/claim',
-                            json={'worker_key': self.profile['username']})
-                        claimed = receipt['run']
-                        if claimed:
-                            bid = receipt['binding_id']
-                        listener_status = receipt.get('status', 'listening')
-                        if listener_status != getattr(self, 'listener_status', None):
-                            self.activity.write('listener', 'status',
-                                'Needs one-time authorization in AIOS Workspace Delegation' if listener_status == 'needs_authorization' else listener_status)
-                        self.listener_status = listener_status
-                    else:
-                        claimed = self.api.request(
-                            'POST', f'workspace-client/{bid}/claim',
-                            json={'worker_key': self.profile['username'], 'protocol_version': self.protocol_version},
-                        )['run']
                 except (APIUnavailable, APIError) as exc:
-                    if not serve or (
-                        isinstance(exc, APIError)
-                        and exc.status < 500
-                        and exc.status != 429
-                    ):
+                    if not serve or (isinstance(exc, APIError) and exc.status < 500 and exc.status != 429):
                         raise
                     if self.last_error != str(exc):
-                        self.activity.write("listener", "connection_error", str(exc))
+                        self.activity.write('listener', 'connection_error', str(exc))
                     self.last_error = str(exc)
                     self.stop_event.wait(2)
                     continue
-                if claimed:
-                    self.run_claim(bid, claimed)
-                    if not serve and (target is None or target == claimed["run_id"]):
-                        return self.journal.status()[0]
-                elif not serve:
-                    if target:
-                        return self.api.request(
-                            "GET", f"workspace-client/{bid}/runs/{target}"
-                        )
-                    return {"status": "idle"}
+                with execution_slot(self.profile['workspace'], self.profile.get('administration_enabled', False)) as acquired:
+                    if not acquired:
+                        if getattr(self, 'listener_status', None) != 'waiting_workspace':
+                            self.activity.write('listener', 'status', 'Waiting for shared workspace or host administration lock')
+                        self.listener_status = 'waiting_workspace'
+                        # An idle listener must stay visible without claiming a lease.
+                        if automatic and 'shared-environments-v1' in self.server_capabilities:
+                            try:
+                                heartbeat = self.api.request('POST', f'workspace-client/registrations/{registration_id}/heartbeat',
+                                                             json={'worker_key': self.profile['username']})
+                                if heartbeat['status'] == 'needs_authorization':
+                                    self.listener_status = 'needs_authorization'
+                            except (APIUnavailable, APIError) as exc:
+                                if not serve or (isinstance(exc, APIError) and exc.status < 500 and exc.status != 429):
+                                    raise
+                        if not serve:
+                            if target:
+                                return self.api.request('GET', f'workspace-client/{bid}/runs/{target}')
+                            return {'status': 'busy', 'reason': 'Another agent is using this workspace or administering this host'}
+                        self.stop_event.wait(2)
+                        continue
+                    try:
+                        # Retry only persisted reports and polling, never workspace operations.
+                        if automatic:
+                            receipt = self.api.request('POST',
+                                f'workspace-client/registrations/{registration_id}/claim',
+                                json={'worker_key': self.profile['username']})
+                            claimed = receipt['run']
+                            if claimed:
+                                bid = receipt['binding_id']
+                            listener_status = receipt.get('status', 'listening')
+                            if listener_status != getattr(self, 'listener_status', None):
+                                self.activity.write('listener', 'status',
+                                    'Needs one-time authorization in AIOS Workspace Delegation' if listener_status == 'needs_authorization' else listener_status)
+                            self.listener_status = listener_status
+                        else:
+                            claimed = self.api.request(
+                                'POST', f'workspace-client/{bid}/claim',
+                                json={'worker_key': self.profile['username'], 'protocol_version': self.protocol_version},
+                            )['run']
+                    except (APIUnavailable, APIError) as exc:
+                        if not serve or (
+                            isinstance(exc, APIError)
+                            and exc.status < 500
+                            and exc.status != 429
+                        ):
+                            raise
+                        if self.last_error != str(exc):
+                            self.activity.write("listener", "connection_error", str(exc))
+                        self.last_error = str(exc)
+                        self.stop_event.wait(2)
+                        continue
+                    if claimed:
+                        self.run_claim(bid, claimed)
+                        if not serve and (target is None or target == claimed["run_id"]):
+                            return self.journal.status()[0]
+                    elif not serve:
+                        if target:
+                            return self.api.request(
+                                "GET", f"workspace-client/{bid}/runs/{target}"
+                            )
+                        return {"status": "idle"}
                 self.stop_event.wait(2)
 
     def run_claim(self, bid, claim):

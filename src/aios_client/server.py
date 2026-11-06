@@ -23,13 +23,14 @@ from .diagnostics import connection_hint, installation_info
 class Manager:
     def __init__(self, store):
         self.store = store
-        self.lock = threading.Lock()
+        self.lock = threading.RLock()
         self.running = {}
         self.errors = {}
         self.gates = {}
 
     def active(self):
-        return any(t.is_alive() for r, t in self.running.values())
+        with self.lock:
+            return any(t.is_alive() for r, t in self.running.values())
 
     def start(self, agent, task, serve=False):
         with self.lock:
@@ -37,14 +38,14 @@ class Manager:
                 raise ValueError("Agent already running")
             c = self.store.load()
             p = c["agents"][agent]
-            # First pass intentionally permits one active local profile. Profile schema and
-            # per-endpoint gates are ready for multiple agents once workspace concurrency is tested.
-            if self.active():
-                raise ValueError("First pass supports one active agent at a time")
+            # Reconfigure gates only when no runner can still be using them.
+            if not self.active():
+                self.gates.clear()
             e = c["endpoints"][p["endpoint"]]
-            self.gates[p["endpoint"]] = threading.BoundedSemaphore(
-                int(e.get("concurrency", 1))
-            )
+            if p["endpoint"] not in self.gates:
+                self.gates[p["endpoint"]] = threading.BoundedSemaphore(
+                    int(e.get("concurrency", 1))
+                )
             runner = Runner(self.store, agent, self.gates)
 
             def work():
@@ -61,8 +62,9 @@ class Manager:
             thread.start()
 
     def stop(self, agent):
-        if agent in self.running:
-            self.running[agent][0].stop()
+        with self.lock:
+            if agent in self.running:
+                self.running[agent][0].stop()
 
     def close(self):
         for r, t in self.running.values():
@@ -155,9 +157,10 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
 
     @app.post("/api/config")
     def save(data: dict):
-        if manager.active():
-            raise ValueError("Stop the active agent before editing configuration")
-        store.save(data)
+        with manager.lock:
+            if manager.active():
+                raise ValueError("Stop all active agents before editing configuration")
+            store.save(data)
         return {"ok": True}
 
     @app.post("/api/privileges")
@@ -168,15 +171,16 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
 
     @app.post("/api/secret")
     def secret(data: dict):
-        if manager.active():
-            raise ValueError("Stop the agent before changing credentials")
-        if data.get("remove"):
-            store.secrets.delete(data.get("ref", ""))
-            return {"secret_ref": ""}
-        name = data.get("name", "")
-        if not name or len(name) > 100 or not isinstance(data.get("value"), str):
-            raise ValueError("Secret name and value required")
-        return {"secret_ref": store.secrets.set(name, data["value"], data.get("storage", "keyring"))}
+        with manager.lock:
+            if manager.active():
+                raise ValueError("Stop all active agents before changing credentials")
+            if data.get("remove"):
+                store.secrets.delete(data.get("ref", ""))
+                return {"secret_ref": ""}
+            name = data.get("name", "")
+            if not name or len(name) > 100 or not isinstance(data.get("value"), str):
+                raise ValueError("Secret name and value required")
+            return {"secret_ref": store.secrets.set(name, data["value"], data.get("storage", "keyring"))}
 
     @app.get("/api/credential-storage")
     def credential_storage():
@@ -252,6 +256,7 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
             b = runner.binding()
             if 'registration_id' in b:
                 return {'ok': True, 'registration_id': b['registration_id'],
+                        'environment_id': b.get('environment_id'),
                         'authorized': b['enabled'], 'protocol_version': runner.protocol_version,
                         'status': 'Registered; start listening. Authorize once in AIOS Workspace Delegation.' if not b['enabled']
                                   else 'Authorized; new matching chats attach automatically.'}
