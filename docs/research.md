@@ -109,8 +109,9 @@ Example Calibre Content Server:
  "endpoint":"http://calibre.lan:8080/opds","priority":10}
 ```
 
-Calibre uses OPDS search, with `full_text=y` requested. Your Calibre server must
-have indexing enabled to return content-search results. This first adapter
+Calibre uses OPDS search, first with `full_text=y` and then metadata search if
+full-text results are unavailable. Enable Calibre's full-text indexing for
+content-based discoveries. This first adapter
 requires an accessible, anonymous OPDS catalog; authentication is deliberately
 not attempted. When an OPDS book advertises an EPUB or PDF acquisition link on
 the **same origin**, `research_read` downloads a bounded copy and extracts its

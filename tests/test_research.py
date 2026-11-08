@@ -222,3 +222,21 @@ def test_reject_external_calibre_acquisition(tmp_path):
     found = w.execute("research_search", {"query": "books"})
     read = w.execute("research_read", {"evidence_id": found["results"][0]["evidence_id"]})
     assert read["full_document_retrieved"] is False
+
+
+def test_calibre_falls_back_to_metadata_search(tmp_path):
+    calls = []
+    def serve(request):
+        calls.append(request.url.params.get("full_text"))
+        if request.url.params.get("full_text") == "y":
+            return httpx.Response(404)
+        return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                              text='<feed xmlns="http://www.w3.org/2005/Atom">'
+                                   '<entry><title>Metadata handbook</title></entry></feed>')
+    sources = load(tmp_path, [{"id": "lib", "adapter": "calibre_opds",
+                               "endpoint": "http://calibre.test/opds"}], ["lib"])
+    w = make_workspace(tmp_path, sources, transport=httpx.MockTransport(serve))
+    result = w.execute("research_search", {"query": "handbook"})
+    assert result["status"] == "ok"
+    assert result["results"][0]["title"] == "Metadata handbook"
+    assert calls == ["y", None]

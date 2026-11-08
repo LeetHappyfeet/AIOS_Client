@@ -175,14 +175,24 @@ class ResearchTools:
         url = source.endpoint.rstrip("/") + "/search/" + quote(query, safe="")
         req = str(httpx.URL(url).copy_merge_params({"full_text": "y"}))
         data, content_type, error = self._get(req, accept="application/atom+xml")
-        if error:
-            return {"error": error}
-        if "xml" not in content_type and "atom" not in content_type:
-            return {"error": "not_opds"}
-        try:
-            feed = ElementTree.fromstring(data)
-        except ElementTree.ParseError:
-            return {"error": "invalid_opds"}
+        feed = None
+        if not error and ("xml" in content_type or "atom" in content_type):
+            try:
+                feed = ElementTree.fromstring(data)
+            except ElementTree.ParseError:
+                pass
+        # When FTS is unavailable, fall back to metadata search on the same
+        # operator-approved Calibre endpoint rather than failing entirely.
+        if feed is None or not feed.findall(ATOM + "entry"):
+            data, content_type, error = self._get(url, accept="application/atom+xml")
+            if error:
+                return {"error": error}
+            if "xml" not in content_type and "atom" not in content_type:
+                return {"error": "not_opds"}
+            try:
+                feed = ElementTree.fromstring(data)
+            except ElementTree.ParseError:
+                return {"error": "invalid_opds"}
         results = []
         for entry in feed.findall(ATOM + "entry")[:limit]:
             title = entry.findtext(ATOM + "title") or "Untitled"
