@@ -264,3 +264,37 @@ def test_index_is_not_permitted_for_network_source(tmp_path):
     with pytest.raises(ValueError):
         load(tmp_path, [{"id":"web", "adapter":"searxng",
                          "endpoint":"http://search.test", "indexed":True}], ["web"])
+
+
+def test_pdf_text_layer_pages_are_searchable(tmp_path):
+    import io
+    from pypdf import PdfWriter
+    from pypdf.generic import DictionaryObject, NameObject, DecodedStreamObject
+
+    writer = PdfWriter()
+    page = writer.add_blank_page(width=300, height=300)
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica")
+    })
+    font_ref = writer._add_object(font)
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font_ref})
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 12 Tf 30 250 Td (Engine coolant repair procedure) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    docs = tmp_path / "pdfs"
+    docs.mkdir()
+    with (docs / "manual.pdf").open("wb") as target:
+        writer.write(target)
+    sources = load(tmp_path, [{"id":"manuals", "adapter":"local_documents",
+                               "root":str(docs)}], ["manuals"])
+    w = make_workspace(tmp_path, sources)
+    search = w.execute("research_search", {"query":"coolant repair"})
+    assert search["status"] == "ok"
+    assert search["results"][0]["location"]["section"] == "page:1"
+    passage = w.execute("research_read", {
+        "evidence_id": search["results"][0]["evidence_id"]})
+    assert "Engine coolant repair procedure" in passage["text"]
