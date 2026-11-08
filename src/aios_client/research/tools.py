@@ -60,7 +60,9 @@ class ResearchTools:
                         return {"error": "not_json"}
                     if response.headers.get("content-encoding", "identity").lower() != "identity":
                         return {"error": "encoded_response"}
-                    for chunk in response.iter_raw():
+                    # Buffered mock responses may have consumed the stream already.
+                    chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
+                    for chunk in chunks:
                         self.workspace.guard()
                         if len(data) + len(chunk) > 131072:
                             return {"error": "response_too_large"}

@@ -97,7 +97,7 @@ class Registry:
             raise ToolArguments("Unknown tool or invalid arguments")
         tool = self.tools[name]
         if not self.permitted(tool):
-            raise ToolArguments("Tool is not permitted by this agent's active tool policy")
+            raise ToolArguments("Research tool policy forbids this tool" if self.tool_mode == "research" else "Read-only inspection policy forbids this tool; use inspect_environment and return findings directly")
         try:
             values = tool.arguments.model_validate(arguments)
         except ValidationError as exc:
