@@ -133,3 +133,58 @@ def test_work_tools_reject_identity_and_require_revision_before_transport():
     with pytest.raises(ValueError, match='revision'):
         registry.execute('aios_read_work_result', {'run_id': str(uuid4()), 'cursor': 100})
     assert calls == []
+
+
+@pytest.mark.parametrize("publish", [False, True])
+def test_compact_brief_and_memory_use_existing_finish_only(tmp_path, monkeypatch, publish):
+    runner = make_runner(tmp_path, monkeypatch)
+    spec = assignment("Read-only: choose the next TLS probe")
+    note = {"kind": "attempt", "text": "The gateway rejected the staging certificate.",
+            "finding_index": 0}
+
+    class CompactService(WorkService):
+        def handle(self, request):
+            response = super().handle(request)
+            if request.url.path.endswith("/protocol"):
+                data = response.json()
+                data["capabilities"].append("workspace-memory-v1")
+                return httpx.Response(200, json=data)
+            if request.url.path.endswith("/context"):
+                assert json.loads(request.content)["compact"] is True
+                return httpx.Response(200, json={
+                    **response.json(), "format": "workspace-memory-v1",
+                    "text": "AIOS WORKER BRIEF\nPrior attempt: inspect the gateway certificate first.",
+                })
+            return response
+
+    service = CompactService(spec)
+    runner.api = API("http://aios", transport=httpx.MockTransport(service.handle))
+    step = 0
+
+    def model(body):
+        nonlocal step
+        step += 1
+        assert "AIOS WORKER BRIEF" not in body["messages"][0]["content"]
+        assert any(m["role"] == "user" and "inspect the gateway certificate first" in m["content"]
+                   for m in body["messages"] if isinstance(m.get("content"), str))
+        assert {"aios_recall", "aios_work_history", "aios_read_work_result"} <= {
+            t["function"]["name"] for t in body["tools"]}
+        result = {"outcome": "blocked", "summary": "Gateway certificate is the next probe",
+                  "limitations": [], "memory_candidates": [note]}
+        if publish and step == 1:
+            return tool("publish_result", {**result, "findings": ["TLS handshake failed"]}, "result")
+        return {"role": "assistant", "content": json.dumps({
+            **result, "evidence": ["TLS handshake failed"],
+        })}
+
+    runner.model = model_api(model)
+    try:
+        assert runner.work()["status"] == "finished"
+        assert not service.bodies("/observe") and not service.bodies("/work-history")
+        finish, = service.bodies("/finish")
+        assert finish["result"]["memory_candidates"] == [note]
+        assert "memory_candidates" not in finish["result"]["report"]
+        assert finish["result"]["result_summary"]["findings"] == ["TLS handshake failed"]
+        assert step == (2 if publish else 1)
+    finally:
+        runner.close()

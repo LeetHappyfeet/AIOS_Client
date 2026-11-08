@@ -27,6 +27,7 @@ class AgentSession:
         deadline,
         progress,
         observe,
+        worker_brief=None,
     ):
         self.model, self.model_id, self.workspace, self.spec = (
             model,
@@ -48,6 +49,7 @@ class AgentSession:
             spec.budgets.context_chars,
             self.instructions,
             workspace.clean,
+            worker_brief=worker_brief,
         )
         self.tasks = TaskTools(self.record, progress, workspace.stop)
         self.tasks.register(self.registry)

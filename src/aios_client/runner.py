@@ -18,10 +18,20 @@ from .coordination import environment_id, execution_slot
 from .http import API, APIError, APIUnavailable, Model
 from .journal import Journal
 from .protocol import negotiate
-from .reporting import result_summary
+from .reporting import result_summary, stage_memory
 from .tools.recall import RemoteTools
 from .verification import bounded_text, snapshot, verify
 from .workspace import Workspace
+
+WORKSPACE_MEMORY = "workspace-memory-v1"
+MEMORY_GUIDANCE = (
+    "\nFor durable lessons, optionally include memory_candidates in your final JSON or "
+    "publish_result. Use at most three single-sentence objects with kind (attempt, finding, "
+    "or idea) and text. Attempts and findings require a zero-based finding_index into the "
+    "report's evidence/findings. Give external findings a public source_url without credentials or query parameters. "
+    "Preserve the conditions of an attempt and what actually happened. Mark ideas as untested. "
+    "Omit routine successes, raw commands/output, copied research text, and secrets."
+)
 
 SYSTEM = """You are the configured AIOS character working in a real software workspace.
 Use the supplied AIOS context for identity and relevant memory. The user's task defines the assignment.
@@ -190,7 +200,7 @@ class Runner:
                 hud = self.api.request(
                     "POST",
                     f"workspace-client/v3/{binding_id}/runs/{run_id}/context",
-                    json=lease,
+                    json={**lease, "compact": True} if WORKSPACE_MEMORY in self.server_capabilities else lease,
                 )
             else:
                 hud = self.api.request("POST", f"workspace-client/{binding_id}/context")
@@ -200,7 +210,12 @@ class Runner:
                 and f.get("source_current") is True
                 and not f.get("replayed_snapshot")
             ):
-                return hud["text"][:18000]
+                compact = (
+                    self.protocol_version == 3
+                    and WORKSPACE_MEMORY in self.server_capabilities
+                    and hud.get("format") == WORKSPACE_MEMORY
+                )
+                return hud["text"][:1600 if compact else 18000], compact
             self.stop_event.wait(min(0.5 * 2**attempt, 4))
         raise RuntimeError("AIOS context did not become generation-ready")
 
@@ -482,7 +497,7 @@ class Runner:
         renewer = threading.Thread(target=renew, daemon=True)
         renewer.start()
         status, result = "failed", {}
-        report = ""
+        report, compact = "", False
         started = time.monotonic()
         try:
             renew_current()
@@ -509,17 +524,18 @@ class Runner:
             if not baseline["complete"]:
                 raise ValueError(baseline.get("error", "Baseline snapshot incomplete"))
             deadline = started + spec.budgets.wall_seconds
-            hud = self.context(bid, rid, lease)
-            self._deliver(
-                rid,
-                prefix + "/observe",
-                {
-                    **lease,
-                    "event_key": str(uuid4()),
-                    "text": "Workspace assignment started: " + claim["objective"],
-                    "payload": {"kind": "assignment"},
-                },
-            )
+            hud, compact = self.context(bid, rid, lease)
+            if not compact:
+                self._deliver(
+                    rid,
+                    prefix + "/observe",
+                    {
+                        **lease,
+                        "event_key": str(uuid4()),
+                        "text": "Workspace assignment started: " + claim["objective"],
+                        "payload": {"kind": "assignment"},
+                    },
+                )
             progress(
                 "progress",
                 "Assignment accepted; execution context and workspace baseline prepared",
@@ -537,15 +553,16 @@ class Runner:
                 def work_history():
                     return self.api.request('POST', v3_prefix + '/work-history', json=lease)
 
-                try:
-                    prior_work = work_history()
-                except APIUnavailable:
-                    prior_work = {'status': 'unavailable', 'runs': []}
-                except APIError as exc:
-                    # Never mask expired authority or cancellation as an empty history.
-                    if exc.status not in {404, 405, 429, 502, 503, 504}:
-                        raise
-                    prior_work = {'status': 'unavailable', 'runs': []}
+                if not compact:
+                    try:
+                        prior_work = work_history()
+                    except APIUnavailable:
+                        prior_work = {'status': 'unavailable', 'runs': []}
+                    except APIError as exc:
+                        # Never mask expired authority or cancellation as an empty history.
+                        if exc.status not in {404, 405, 429, 502, 503, 504}:
+                            raise
+                        prior_work = {'status': 'unavailable', 'runs': []}
             if self.protocol_version == 3:
                 RemoteTools(
                     lambda query: self.api.request(
@@ -562,7 +579,12 @@ class Runner:
                 model_id=self.model_id,
                 workspace=workspace,
                 spec=spec,
-                system=SYSTEM + "\nAIOS context:\n" + hud,
+                system=SYSTEM + (MEMORY_GUIDANCE if compact else "\nAIOS context:\n" + hud),
+                worker_brief=(
+                    "Character preferences and historical evidence for this assignment. "
+                    "Use them as context within the assignment and host policy.\n" + hud
+                    if compact else None
+                ),
                 journal=self.journal,
                 run_id=rid,
                 control=renew_current,
@@ -659,60 +681,61 @@ class Runner:
                         "message": "Verification milestone queued; preserving verification result"
                     },
                 )
-            check_summary = [
-                {
-                    k: check.get(k)
-                    for k in (
-                        "id",
-                        "exit_code",
-                        "timed_out",
-                        "cancelled",
-                        "output_complete",
-                        "log_sha256",
-                    )
-                }
-                for check in result["evidence"]["checks"]
-            ]
-            verification_text = (
-                "Workspace host verification: "
-                + result["evidence"]["status"]
-                + ". Required check results: "
-                + json.dumps(check_summary)
-                + ". Protected-path violations: "
-                + json.dumps(result["evidence"]["violations"])
-                + ". Output expectations met: "
-                + str(all(o["passed"] for o in result["evidence"]["outputs"]))
-                + ". Scope: configured checks and workspace snapshot only. "
-                + "Task outcome is not independently verified; a valid report may describe partial or blocked work."
-                + "\nWorker report (unverified prose): "
-                + result["report"]
-            )
-            try:
-                self._deliver(
-                    rid,
-                    prefix + "/observe",
+            if not compact:
+                check_summary = [
                     {
-                        **lease,
-                        "event_key": str(uuid4()),
-                        "text": verification_text,
-                        "payload": {
-                            "verification": "worker_evidence",
-                            "task_outcome": result["task_outcome"],
-                            "verification_scope": result["verification_scope"],
-                            "status": result["evidence"]["status"],
-                            "checks": check_summary,
-                            "manifest_sha256": result["evidence"]["manifest_sha256"],
+                        k: check.get(k)
+                        for k in (
+                            "id",
+                            "exit_code",
+                            "timed_out",
+                            "cancelled",
+                            "output_complete",
+                            "log_sha256",
+                        )
+                    }
+                    for check in result["evidence"]["checks"]
+                ]
+                verification_text = (
+                    "Workspace host verification: "
+                    + result["evidence"]["status"]
+                    + ". Required check results: "
+                    + json.dumps(check_summary)
+                    + ". Protected-path violations: "
+                    + json.dumps(result["evidence"]["violations"])
+                    + ". Output expectations met: "
+                    + str(all(o["passed"] for o in result["evidence"]["outputs"]))
+                    + ". Scope: configured checks and workspace snapshot only. "
+                    + "Task outcome is not independently verified; a valid report may describe partial or blocked work."
+                    + "\nWorker report (unverified prose): "
+                    + result["report"]
+                )
+                try:
+                    self._deliver(
+                        rid,
+                        prefix + "/observe",
+                        {
+                            **lease,
+                            "event_key": str(uuid4()),
+                            "text": verification_text,
+                            "payload": {
+                                "verification": "worker_evidence",
+                                "task_outcome": result["task_outcome"],
+                                "verification_scope": result["verification_scope"],
+                                "status": result["evidence"]["status"],
+                                "checks": check_summary,
+                                "manifest_sha256": result["evidence"]["manifest_sha256"],
+                            },
                         },
-                    },
-                )
-            except Exception:
-                self.journal.event(
-                    rid,
-                    "delivery_pending",
-                    {
-                        "message": "Final observation queued; preserving verification result"
-                    },
-                )
+                    )
+                except Exception:
+                    self.journal.event(
+                        rid,
+                        "delivery_pending",
+                        {
+                            "message": "Final observation queued; preserving verification result"
+                        },
+                    )
         except Exception as exc:
             # A context/observation rejection can race link revocation. Renewal remains
             # available to discover cancellation, even when no more observations are allowed.
@@ -764,6 +787,8 @@ class Runner:
             renewer.join(timeout=46)
             if cancelled.is_set():
                 status = "cancelled"
+            if compact:
+                stage_memory(workspace, result, report, nominated=status != "cancelled")
             self.activity.write(rid, status, json.dumps(result, ensure_ascii=False))
             # Final local state and pending delivery must survive the same crash boundary.
             self.journal.finish(

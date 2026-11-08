@@ -6,6 +6,9 @@ import hashlib
 import json
 import re
 
+from pydantic import ValidationError
+
+from .tools.results import MemoryCandidate
 from .verification import bounded_text
 
 REPORT = re.compile(r"aios-experiment-[0-9a-fA-F-]{36}\.json\Z")
@@ -27,6 +30,35 @@ def _object(text):
     ):
         return None
     return value
+
+
+def stage_memory(workspace, result, report, *, nominated):
+    """Include bounded nominations in finish, separately from the readable report."""
+    final = _object(report)
+    if final is not None and "memory_candidates" in final:
+        raw = final.pop("memory_candidates")
+        clean_report = json.dumps(workspace.clean(final), ensure_ascii=False)
+        if "report" in result:
+            result["report"] = bounded_text(clean_report, 6000)
+            result["report_truncated"] = result["report"] != clean_report
+    else:
+        raw = None
+    if not nominated:
+        return
+    selected = getattr(workspace, "published_result", None)
+    if selected is not None:
+        raw = selected.get("memory_candidates")
+    if not isinstance(raw, list) or "result_summary" not in result:
+        return
+    candidates = []
+    for item in raw[:3]:
+        try:
+            note = MemoryCandidate.model_validate(workspace.clean(item))
+        except ValidationError:
+            continue
+        candidates.append(note.model_dump(exclude_none=True))
+    if candidates and len(json.dumps({**result, "memory_candidates": candidates})) <= 60000:
+        result["memory_candidates"] = candidates
 
 
 def result_summary(workspace, spec, report, *, execution_failed=False):

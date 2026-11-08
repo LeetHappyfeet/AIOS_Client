@@ -62,12 +62,13 @@ class RepositoryInstructions:
 
 
 class WorkingContext:
-    def __init__(self, system, assignment, budget, instructions, clean=lambda x: x):
+    def __init__(self, system, assignment, budget, instructions, clean=lambda x: x, *, worker_brief=None):
         self.system, self.assignment = system, assignment
         self.budget, self.instructions, self.clean = budget, instructions, clean
         self.history, self.ledger, self.errors = [], [], []
         self.compacted = 0
         self.state = {}
+        self.worker_brief = self.clean(worker_brief)
 
     def append(self, message):
         self.history.append(self.clean(message))
@@ -77,6 +78,8 @@ class WorkingContext:
             {"role": "system", "content": self.system},
             {"role": "user", "content": json.dumps(self.assignment)},
         ]
+        if self.worker_brief:
+            messages.append({"role": "user", "content": self.worker_brief})
         state = {
             "host_state": self.state,
             "repository_instructions": self.instructions.loaded,

@@ -23,6 +23,14 @@ class ResultText(BaseModel):
     text: Annotated[str, Field(max_length=8000)]
 
 
+class MemoryCandidate(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    kind: Literal["attempt", "finding", "idea"]
+    text: Annotated[str, Field(min_length=1, max_length=240)]
+    finding_index: Annotated[int | None, Field(ge=0, le=5)] = None
+    source_url: Annotated[str | None, Field(max_length=512)] = None
+
+
 class ResultTools:
     def __init__(self, workspace):
         self.workspace = workspace
@@ -39,6 +47,7 @@ class ResultTools:
         ] = [],
         files: Annotated[list[ResultFile], Field(max_length=4)] = [],
         content: Annotated[list[ResultText], Field(max_length=4)] = [],
+        memory_candidates: Annotated[list[MemoryCandidate], Field(max_length=3)] = [],
     ):
         if not summary.strip():
             raise ValueError("Result summary must not be blank")
@@ -95,6 +104,7 @@ class ResultTools:
                 "evidence": findings,
                 "limitations": limitations,
                 "requested_content": sections,
+                "memory_candidates": memory_candidates,
             }
         )
         return {
