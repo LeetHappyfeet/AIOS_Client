@@ -13,6 +13,7 @@ from pydantic import Field
 
 from .tools import files, git, inspection, network, output, processes, results
 from .tools.registry import Registry
+from .research.tools import ResearchTools, register as register_research
 from .tools.privileges import Privileges
 
 EXCLUDED = files.EXCLUDED
@@ -30,6 +31,9 @@ class Workspace:
         http_origins=(),
         http_transport=None,
         administration_enabled=False,
+        research_sources=(),
+        research_transport=None,
+        tool_mode="workspace",
     ):
         self.privileges = Privileges(administration_enabled)
         self.root = Path(root).expanduser().resolve(strict=True)
@@ -52,11 +56,16 @@ class Workspace:
         self.model_diagnostics = {}
         self.result_tools = results.ResultTools(self)
         self.registry = Registry(self.guard, self.bound_result)
+        if tool_mode not in {"workspace", "research"}:
+            raise ValueError("Unknown agent tool mode")
+        self.registry.tool_mode = tool_mode
+        self.research_tools = ResearchTools(self, research_sources, research_transport)
         files.register(self.registry, self.filesystem)
         processes.register(self.registry, self.process_manager)
         git.register(self.registry, self.git)
         output.register(self.registry, self.output_tools)
         network.register(self.registry, self.http_tools)
+        register_research(self.registry, self.research_tools)
         results.register(self.registry, self.result_tools)
         self.registry.add(
             "inspect_environment", self.inspect_environment,
@@ -190,6 +199,8 @@ class Workspace:
             "tool_protocol": 1,
             "http_origins": sorted(self.http_tools.origins),
             "read_only_inspection": self.registry.read_only,
+            "tool_mode": self.registry.tool_mode,
+            "research_sources": sorted(self.research_tools.sources),
         }
 
     def inspect_environment(self):

@@ -19,6 +19,7 @@ from .http import API, APIError, APIUnavailable, Model
 from .journal import Journal
 from .protocol import negotiate
 from .reporting import result_summary, stage_memory
+from .research.sources import load_sources
 from .tools.recall import RemoteTools
 from .verification import bounded_text, snapshot, verify
 from .workspace import Workspace
@@ -428,6 +429,11 @@ class Runner:
             on_event=local_event,
             http_origins=self.profile.get("http_origins", []),
             administration_enabled=self.profile.get("administration_enabled", False),
+            research_sources=load_sources(
+                self.store.path.parent / "research_sources.json",
+                self.profile.get("research_sources", []),
+            ),
+            tool_mode=self.profile.get("tool_mode", "workspace"),
         )
         lease_stop = threading.Event()
         lease_error = []

@@ -41,8 +41,14 @@ class Registry:
         self.tools = {}
         self.guard, self.bound = guard, bound
         self.read_only = False
+        self.tool_mode = "workspace"  # research mode is separate from inspection
 
     def permitted(self, tool):
+        if self.tool_mode == "research":
+            return tool.capability == "research.read" or tool.name in {
+                "publish_result", "update_plan", "task_blocked", "aios_recall",
+                "aios_progress", "aios_work_history", "aios_read_work_result",
+            }
         if not self.read_only:
             return True
         # Arbitrary shell, stdin, HTTP and Git subprocesses can all mutate the
@@ -91,7 +97,7 @@ class Registry:
             raise ToolArguments("Unknown tool or invalid arguments")
         tool = self.tools[name]
         if not self.permitted(tool):
-            raise ToolArguments("Read-only inspection policy forbids this tool; use inspect_environment and return findings directly")
+            raise ToolArguments("Tool is not permitted by this agent's active tool policy")
         try:
             values = tool.arguments.model_validate(arguments)
         except ValidationError as exc:

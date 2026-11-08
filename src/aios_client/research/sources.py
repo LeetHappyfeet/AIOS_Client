@@ -1,0 +1,78 @@
+"""Operator-owned source registry; agent grants never define arbitrary endpoints."""
+
+from __future__ import annotations
+
+import json
+import re
+from pathlib import Path
+from typing import Literal
+
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from ..config import base_url
+
+
+SOURCE_ID = re.compile(r"^[a-z][a-z0-9_-]{0,63}$")
+
+
+class ResearchSource(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+
+    id: str
+    adapter: Literal["searxng", "local_text"]
+    enabled: bool = True
+    priority: int = Field(default=100, ge=0, le=1000)
+    topics: list[str] = Field(default_factory=list, max_length=20)
+    endpoint: str | None = None
+    root: str | None = None
+
+    @model_validator(mode="after")
+    def validate_source(self):
+        if not SOURCE_ID.fullmatch(self.id):
+            raise ValueError("Invalid research source ID")
+        if any(not isinstance(t, str) or not SOURCE_ID.fullmatch(t) for t in self.topics):
+            raise ValueError("Invalid research topic")
+        if self.adapter == "searxng":
+            if self.root is not None or not self.endpoint:
+                raise ValueError("SearXNG requires endpoint and forbids root")
+            normalized = base_url(self.endpoint)
+            if len(normalized) > 400 or "\\" in normalized:
+                raise ValueError("Invalid SearXNG endpoint")
+            self.endpoint = normalized
+        else:
+            if self.endpoint is not None or not self.root:
+                raise ValueError("local_text requires root and forbids endpoint")
+            path = Path(self.root).expanduser()
+            if not path.is_absolute() or ".." in path.parts or len(str(path)) > 1000:
+                raise ValueError("Local research root must be an absolute path")
+            self.root = str(path)
+        return self
+
+
+class SourceFile(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    version: Literal[1]
+    sources: list[ResearchSource] = Field(max_length=100)
+
+
+def load_sources(path: Path, grants=()):
+    """Never auto-discover search engines or grant all sources by default."""
+    grants = tuple(grants)
+    if not grants:
+        return ()
+    for grant in grants:
+        if not isinstance(grant, str) or not SOURCE_ID.fullmatch(grant):
+            raise ValueError("Invalid research source grant")
+    path = Path(path)
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("Research source registry missing or is a symlink")
+    if path.stat().st_size > 65536:
+        raise ValueError("Research source registry exceeds size limit")
+    config = SourceFile.model_validate(json.loads(path.read_text(encoding="utf-8")))
+    ids = [source.id for source in config.sources]
+    if len(ids) != len(set(ids)):
+        raise ValueError("Duplicate research source IDs")
+    by_id = {source.id: source for source in config.sources}
+    if any(grant not in by_id or not by_id[grant].enabled for grant in grants):
+        raise ValueError("Agent grants an unknown or disabled research source")
+    return tuple(sorted((by_id[g] for g in set(grants)), key=lambda s: (s.priority, s.id)))

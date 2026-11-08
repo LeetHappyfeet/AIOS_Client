@@ -142,6 +142,8 @@ class WorkingContext:
                             "process_id",
                             "cursor",
                             "artifact_id",
+                            "evidence_id",
+                            "source_id",
                             "run_id",
                             "section",
                             "revision",

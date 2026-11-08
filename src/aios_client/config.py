@@ -220,6 +220,15 @@ class ConfigStore:
                 raise ValueError("Endpoint timeout must be 1–1800 seconds")
         for p in data["agents"].values():
             from .tools.network import canonical_origin
+            from .research.sources import SOURCE_ID
+
+            if p.get("tool_mode", "workspace") not in ("workspace", "research"):
+                raise ValueError("tool_mode must be workspace or research")
+            grants = p.get("research_sources", [])
+            if type(grants) is not list or len(grants) > 30 or any(
+                type(x) is not str or not SOURCE_ID.fullmatch(x) for x in grants
+            ) or len(grants) != len(set(grants)):
+                raise ValueError("research_sources must be a list of unique source IDs")
 
             if type(p.get("administration_enabled", False)) is not bool:
                 raise ValueError("administration_enabled must be a boolean")
