@@ -162,7 +162,7 @@ class ResearchTools:
                         rel = path.relative_to(root).as_posix()
                         results.append(self._store(
                             source, "local_document", name, excerpt,
-                            location={"path": rel, "section": location},
+                            location=(rel if source.adapter == "local_text" else {"path": rel, "section": location}),
                             sha256=digest(data),
                             internal={"relative": rel, "section": location}))
                         if len(results) >= limit:
