@@ -434,6 +434,7 @@ class Runner:
                 self.profile.get("research_sources", []),
             ),
             tool_mode=self.profile.get("tool_mode", "workspace"),
+            research_index_path=self.directory / "research-index.sqlite3",
         )
         lease_stop = threading.Event()
         lease_error = []

@@ -138,3 +138,11 @@ write books or raw retrievals into character memory.
 
 The next iteration should add incremental SQLite FTS5 indexing, a complete
 Calibre section navigator, credentials, and richer citation publishing.
+
+## Optional local full-text index
+
+For large `local_documents` sources, set `"indexed": true`. AIOS-Client uses a
+per-agent SQLite FTS5 cache (`client-data/agents/<id>/research-index.sqlite3`).
+Changes to files are refreshed on the next search; the first scan reads up to
+1,000 eligible files. This cache is not character memory and should remain
+private to the operating-system account. No extra server is required.

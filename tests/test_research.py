@@ -240,3 +240,27 @@ def test_calibre_falls_back_to_metadata_search(tmp_path):
     assert result["status"] == "ok"
     assert result["results"][0]["title"] == "Metadata handbook"
     assert calls == ["y", None]
+
+def test_optional_local_index_rebuilds_changed_file(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    path = docs / "notes.md"
+    path.write_text("Engine coolant hose and pump pressure.")
+    sources = load(tmp_path, [{"id":"indexed", "adapter":"local_documents",
+                               "root":str(docs), "indexed":True}], ["indexed"])
+    root = tmp_path / "workspace"
+    root.mkdir()
+    w = Workspace(root, tmp_path / "artifacts", research_sources=sources,
+                  research_index_path=tmp_path / "cache" / "index.sqlite3",
+                  tool_mode="research")
+    result = w.execute("research_search", {"query":"engine coolant"})
+    assert len(result["results"]) == 1
+    path.write_text("Steel bearings and seals.")
+    assert not w.execute("research_search", {"query":"engine coolant"})["results"]
+    assert len(w.execute("research_search", {"query":"steel bearings"})["results"]) == 1
+
+
+def test_index_is_not_permitted_for_network_source(tmp_path):
+    with pytest.raises(ValueError):
+        load(tmp_path, [{"id":"web", "adapter":"searxng",
+                         "endpoint":"http://search.test", "indexed":True}], ["web"])

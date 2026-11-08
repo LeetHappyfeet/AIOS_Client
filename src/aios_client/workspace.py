@@ -33,6 +33,7 @@ class Workspace:
         administration_enabled=False,
         research_sources=(),
         research_transport=None,
+        research_index_path=None,
         tool_mode="workspace",
     ):
         self.privileges = Privileges(administration_enabled)
@@ -59,7 +60,7 @@ class Workspace:
         if tool_mode not in {"workspace", "research"}:
             raise ValueError("Unknown agent tool mode")
         self.registry.tool_mode = tool_mode
-        self.research_tools = ResearchTools(self, research_sources, research_transport)
+        self.research_tools = ResearchTools(self, research_sources, research_transport, research_index_path)
         files.register(self.registry, self.filesystem)
         processes.register(self.registry, self.process_manager)
         git.register(self.registry, self.git)

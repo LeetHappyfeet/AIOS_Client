@@ -14,6 +14,7 @@ import httpx
 from pydantic import Field
 
 from .documents import MAX_DOCUMENT, digest, extract_document, html_text
+from .index import DocumentIndex
 from ..tools.network import canonical_origin
 
 ALLOWED_LOCAL = {".txt", ".md", ".rst", ".csv", ".json", ".html", ".htm", ".pdf", ".epub"}
@@ -21,11 +22,12 @@ ATOM = "{http://www.w3.org/2005/Atom}"
 
 
 class ResearchTools:
-    def __init__(self, workspace, sources, transport=None):
+    def __init__(self, workspace, sources, transport=None, index_path=None):
         self.workspace = workspace
         self.sources = {source.id: source for source in sources}
         self.transport = transport
         self.evidence = {}
+        self.index = DocumentIndex(index_path) if index_path else None
 
     def research_sources(self):
         return {"sources": [
@@ -123,7 +125,25 @@ class ResearchTools:
             raise ValueError("Unsupported document")
         return target
 
+    def _local_index(self, source, query, limit):
+        result = self.index.search(source, query, limit, self.workspace.guard)
+        if "error" in result:
+            return result
+        items = []
+        for relative, section, content, sha in result.get("matches", []):
+            lower = content.casefold()
+            start = min((lower.find(t) for t in query.casefold().split()
+                         if t in lower), default=0)
+            excerpt = content[max(0, start - 250):start + 1000]
+            items.append(self._store(source, "local_document", Path(relative).name,
+                                     excerpt, location={"path": relative, "section": section},
+                                     sha256=sha,
+                                     internal={"relative": relative, "section": section}))
+        return {"results": items, "scan_truncated": result.get("scan_truncated", False)}
+
     def _local_text(self, source, query, limit):
+        if source.adapter == "local_documents" and source.indexed and self.index:
+            return self._local_index(source, query, limit)
         root = Path(source.root)
         if root.is_symlink() or not root.is_dir():
             return {"error": "local_root_unavailable"}

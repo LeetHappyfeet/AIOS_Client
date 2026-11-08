@@ -26,6 +26,7 @@ class ResearchSource(BaseModel):
     endpoint: str | None = None
     root: str | None = None
     read_origins: list[str] = Field(default_factory=list, max_length=20)
+    indexed: bool = False
 
     @model_validator(mode="after")
     def validate_source(self):
@@ -36,6 +37,8 @@ class ResearchSource(BaseModel):
         from ..tools.network import canonical_origin
         for origin in self.read_origins:
             canonical_origin(origin, origin_only=True)
+        if self.indexed and self.adapter != "local_documents":
+            raise ValueError("Only local_documents supports indexing")
         if self.adapter != "searxng" and self.read_origins:
             raise ValueError("Only SearXNG sources may grant result-page reading")
         if self.adapter in ("searxng", "calibre_opds"):
