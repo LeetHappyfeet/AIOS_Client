@@ -19,12 +19,13 @@ class ResearchSource(BaseModel):
     model_config = ConfigDict(extra="forbid", strict=True)
 
     id: str
-    adapter: Literal["searxng", "local_text"]
+    adapter: Literal["searxng", "local_text", "local_documents", "calibre_opds"]
     enabled: bool = True
     priority: int = Field(default=100, ge=0, le=1000)
     topics: list[str] = Field(default_factory=list, max_length=20)
     endpoint: str | None = None
     root: str | None = None
+    read_origins: list[str] = Field(default_factory=list, max_length=20)
 
     @model_validator(mode="after")
     def validate_source(self):
@@ -32,20 +33,27 @@ class ResearchSource(BaseModel):
             raise ValueError("Invalid research source ID")
         if any(not isinstance(t, str) or not SOURCE_ID.fullmatch(t) for t in self.topics):
             raise ValueError("Invalid research topic")
-        if self.adapter == "searxng":
+        from ..tools.network import canonical_origin
+        for origin in self.read_origins:
+            canonical_origin(origin, origin_only=True)
+        if self.adapter != "searxng" and self.read_origins:
+            raise ValueError("Only SearXNG sources may grant result-page reading")
+        if self.adapter in ("searxng", "calibre_opds"):
             if self.root is not None or not self.endpoint:
-                raise ValueError("SearXNG requires endpoint and forbids root")
+                raise ValueError("Network source requires endpoint and forbids root")
             normalized = base_url(self.endpoint)
             if len(normalized) > 400 or "\\" in normalized:
-                raise ValueError("Invalid SearXNG endpoint")
+                raise ValueError("Invalid research source endpoint")
             self.endpoint = normalized
         else:
             if self.endpoint is not None or not self.root:
-                raise ValueError("local_text requires root and forbids endpoint")
+                raise ValueError("Local source requires root and forbids endpoint")
             path = Path(self.root).expanduser()
             if not path.is_absolute() or ".." in path.parts or len(str(path)) > 1000:
                 raise ValueError("Local research root must be an absolute path")
             self.root = str(path)
+        if self.adapter == "calibre_opds" and self.endpoint and not self.endpoint.rstrip("/").endswith("/opds"):
+            raise ValueError("Calibre OPDS endpoint must end in /opds")
         return self
 
 

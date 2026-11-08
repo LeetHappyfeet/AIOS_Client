@@ -86,3 +86,54 @@ at model catalog and tool execution, independent of objective prose. Legacy
 agents default to `workspace` tool mode, preserving prior behavior. Research
 service credentials, external page reading, and source-aware publication need
 separate security and evidence designs before release.
+
+## Pass 2: authorized document reading
+
+New adapters: `local_documents` and `calibre_opds`. Local documents support
+UTF-8 text, Markdown, HTML, CSV, JSON, RST, text-layer PDFs and EPUB files.
+Text extraction is bounded by file size and page/section count; scanned PDFs
+without OCR text cannot be searched. The default implementation scans files on
+demand; **incremental full-text indexing is not yet implemented**.
+
+Example local collection:
+
+```json
+{"id":"manuals","adapter":"local_documents","root":"/srv/manuals",
+ "priority":5,"topics":["technical"]}
+```
+
+Example Calibre Content Server:
+
+```json
+{"id":"library","adapter":"calibre_opds",
+ "endpoint":"http://calibre.lan:8080/opds","priority":10}
+```
+
+Calibre uses OPDS search, with `full_text=y` requested. Your Calibre server must
+have indexing enabled to return content-search results. This first adapter
+requires an accessible, anonymous OPDS catalog; authentication is deliberately
+not attempted. When an OPDS book advertises an EPUB or PDF acquisition link on
+the **same origin**, `research_read` downloads a bounded copy and extracts its
+first textual section. No arbitrary links are followed.
+
+SearXNG result pages remain blocked by default. To approve reading pages at
+specific websites, put exact origins in the SearXNG source:
+
+```json
+"read_origins": ["https://www.example.org"]
+```
+
+An approved result URL can then be passed indirectly through its `evidence_id`
+to `research_read`. URL strings supplied directly by models cannot cause page
+fetches. Redirects and environment proxy credentials remain disabled.
+Allowlisted DNS hosts are a trust choice by the operator; do not permit unknown
+or sensitive local destinations. There is no general-purpose browser.
+
+`research_read` returns bounded text and a `next_cursor`; local document
+extracts are tied to a SHA-256 snapshot captured at search time. Evidence
+is **run-scoped**, not an AIOS memory fact, and must be attributed and checked
+before making durable factual claims. These new tools do not automatically
+write books or raw retrievals into character memory.
+
+The next iteration should add incremental SQLite FTS5 indexing, a complete
+Calibre section navigator, credentials, and richer citation publishing.
