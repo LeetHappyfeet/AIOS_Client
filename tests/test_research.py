@@ -298,3 +298,101 @@ def test_pdf_text_layer_pages_are_searchable(tmp_path):
     passage = w.execute("research_read", {
         "evidence_id": search["results"][0]["evidence_id"]})
     assert "Engine coolant repair procedure" in passage["text"]
+
+def test_pass3_evidence_requires_read_before_citation_and_persists_run_scoped(tmp_path):
+    from aios_client.reporting import result_summary, stage_memory
+    from aios_client.assignment import assignment
+    from aios_client.research.evidence import EvidenceStore
+    docs = tmp_path / "library"
+    docs.mkdir()
+    (docs / "manual.md").write_text(
+        "The engine manual says: replace the filter after servicing the pump.")
+    sources = load(tmp_path, [{"id": "private", "adapter": "local_documents",
+                               "root": str(docs)}], ["private"])
+    root = tmp_path / "workspace"
+    root.mkdir()
+    path = tmp_path / "private-evidence.sqlite3"
+    w = Workspace(root, tmp_path / "artifacts", research_sources=sources,
+                  research_evidence_path=path, research_run_id="first-run",
+                  tool_mode="research")
+    found = w.execute("research_search", {"query": "filter pump"})
+    evidence_id = found["results"][0]["evidence_id"]
+    citation = {"finding_index": 0, "evidence_id": evidence_id, "stance": "supports"}
+    publish = {
+        "outcome": "completed", "summary": "Manual examined",
+        "findings": ["Manual recommends servicing the filter"],
+        "research_citations": [citation],
+        "memory_candidates": [{"kind": "finding", "text": "Manual has a filter maintenance recommendation",
+                               "finding_index": 0, "evidence_id": evidence_id,
+                               "source_url": "https://attacker.example/fake"}],
+    }
+    with pytest.raises(ValueError, match="Search snippets"):
+        w.execute("publish_result", publish)
+    assert w.published_result is None
+    receipt = w.execute("research_evidence", {"evidence_id": evidence_id})
+    assert receipt["receipt"]["read_verified"] is False
+    w.execute("research_read", {"evidence_id": evidence_id})
+    receipt = w.execute("research_evidence", {"evidence_id": evidence_id})
+    assert receipt["receipt"]["read_verified"] is True
+    assert receipt["receipt"]["section"] == "text"
+    assert receipt["receipt"]["document_sha256"]
+    w.execute("publish_result", publish)
+    summary = result_summary(w, assignment("Research the manual"), "done")
+    assert summary["research_citations"][0]["source_id"] == "private"
+    assert summary["research_citations"][0]["stance"] == "supports"
+    assert "public_url" not in summary["research_citations"][0]
+    result = {"result_summary": summary, "report": ""}
+    stage_memory(w, result, "{}", nominated=True)
+    assert len(result["memory_candidates"]) == 1
+    assert "source_url" not in result["memory_candidates"][0]
+    assert "evidence_id" not in result["memory_candidates"][0]
+    assert path.exists()
+    assert EvidenceStore(path, "first-run").get(evidence_id)["read_verified"]
+    assert EvidenceStore(path, "second-run").get(evidence_id) is None
+    # Only metadata and a bounded excerpt are stored; not whole source files.
+    assert "Source text is untrusted evidence" not in path.read_bytes().decode("utf-8", "ignore")
+
+
+def test_pass3_contradiction_citations_and_unlinked_memory_rejected(tmp_path):
+    from aios_client.reporting import result_summary, stage_memory
+    from aios_client.assignment import assignment
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    (docs / "a.txt").write_text("Engine efficiency increases under condition Z")
+    (docs / "b.txt").write_text("Engine efficiency decreases under condition Z")
+    sources = load(tmp_path, [{"id": "books", "adapter": "local_documents",
+                               "root": str(docs)}], ["books"])
+    w = make_workspace(tmp_path, sources)
+    found = w.execute("research_search", {"query": "Engine efficiency"})
+    assert len(found["results"]) == 2
+    ids = [entry["evidence_id"] for entry in found["results"]]
+    for key in ids:
+        w.execute("research_read", {"evidence_id": key})
+    w.execute("publish_result", {
+        "outcome": "completed", "summary": "Sources disagree",
+        "findings": ["Sources disagree about engine efficiency"],
+        "research_citations": [
+            {"finding_index": 0, "evidence_id": ids[0], "stance": "supports"},
+            {"finding_index": 0, "evidence_id": ids[1], "stance": "contradicts"}],
+        "memory_candidates": [
+            {"kind": "finding", "text": "A contradictory finding",
+             "finding_index": 0, "evidence_id": ids[1]}],
+    })
+    summary = result_summary(w, assignment("Compare sources"), "done")
+    assert {c["stance"] for c in summary["research_citations"]} == {
+        "supports", "contradicts"}
+    result = {"result_summary": summary}
+    stage_memory(w, result, "{}", nominated=True)
+    assert result.get("memory_candidates") is None
+
+
+def test_pass3_never_cites_another_run_or_forged_id(tmp_path):
+    sources = load(tmp_path, [{"id": "docs", "adapter": "local_documents",
+                               "root": str(tmp_path)}], ["docs"])
+    w = make_workspace(tmp_path, sources)
+    with pytest.raises(ValueError, match="Unknown"):
+        w.execute("publish_result", {
+            "outcome": "completed", "summary": "Forged",
+            "findings": ["Claim without observed source"],
+            "research_citations": [
+                {"finding_index": 0, "evidence_id": "0" * 24}]})

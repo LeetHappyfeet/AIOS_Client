@@ -146,3 +146,45 @@ per-agent SQLite FTS5 cache (`client-data/agents/<id>/research-index.sqlite3`).
 Changes to files are refreshed on the next search; the first scan reads up to
 1,000 eligible files. This cache is not character memory and should remain
 private to the operating-system account. No extra server is required.
+
+## Pass 3: evidence receipts, citations and controlled memory nominations
+
+Search snippets remain discovery data only. `research_read` establishes a
+bounded, run-scoped **retrieval receipt** (not independent factual verification).
+`research_evidence(evidence_id)` returns receipt metadata without full text.
+Receipts are kept in a per-agent SQLite cache at
+`client-data/agents/<id>/research-evidence.sqlite3`. The store retains
+bounded excerpts, source and section identifiers, hashes and retrieval times;
+it does **not** copy whole documents into AIOS or the character HUD. Up to
+5,000 recent receipts are retained per agent.
+
+To associate a claim with read evidence, use `publish_result` with the
+optional `research_citations` argument:
+
+```json
+{
+  "outcome": "completed",
+  "summary": "Compared the retrieved sources",
+  "findings": ["A documented observation with qualified scope"],
+  "research_citations": [
+    {"finding_index": 0, "evidence_id": "24-character hex receipt id", "stance": "supports"}
+  ]
+}
+```
+
+A citation to an unread snippet, unknown ID, or another run is rejected.
+`stance` may be `supports` or `contradicts` so conflicting evidence can be
+retained without forcing false certainty. Citations are included in the
+bounded `result_summary` sent to AIOS, without raw pages.
+
+When AIOS advertises compact workspace memory, explicit `finding`
+memory candidates in research mode must link to a supported citation using
+`evidence_id` and `finding_index`. The client validates those references and
+sends only the **existing** memory-candidate shape expected by AIOS. Private
+library references are not converted into public URLs. Unlinked ideas and
+attempts retain their earlier nomination behavior, but no research content
+is automatically inserted into character memory.
+
+No AIOS server schema or RDF ingestion code is changed by this pass.
+Citation-aware memory ingestion, source privacy policies, and independent
+source-fact verification require coordinated AIOS server work.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from urllib.parse import urlsplit
 
 from pydantic import ValidationError
 
@@ -56,7 +57,31 @@ def stage_memory(workspace, result, report, *, nominated):
             note = MemoryCandidate.model_validate(workspace.clean(item))
         except ValidationError:
             continue
-        candidates.append(note.model_dump(exclude_none=True))
+        payload = note.model_dump(exclude_none=True, exclude={"evidence_id"})
+        if getattr(workspace.registry, "tool_mode", "workspace") == "research":
+            # The server's existing memory contract has no evidence_id field.
+            # Publish only supported, retrieved findings and never leak private
+            # library locators into a public source_url.
+            payload.pop("source_url", None)
+            if note.kind == "finding":
+                citations = (selected or {}).get("research_citations", [])
+                supported = [
+                    c for c in citations
+                    if c.get("evidence_id") == note.evidence_id
+                    and c.get("finding_index") == note.finding_index
+                    and c.get("stance") == "supports"
+                ]
+                if not supported:
+                    continue
+                url = supported[0].get("public_url")
+                if url:
+                    parts = urlsplit(url)
+                    if (parts.scheme == "https" and parts.hostname
+                            and not parts.username and not parts.password
+                            and not parts.query and not parts.fragment
+                            and len(url) <= 512):
+                        payload["source_url"] = url
+        candidates.append(payload)
     if candidates and len(json.dumps({**result, "memory_candidates": candidates})) <= 60000:
         result["memory_candidates"] = candidates
 
@@ -173,12 +198,24 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
         "source": source,
         "source_sha256": source_hash,
     }
+    # Citations are source-retrieval receipts, not proof that claims are true.
+    # Never infer citations from worker prose or from arbitrary returned URLs.
+    if source == "publish_result":
+        citations = value.get("research_citations", [])
+        if isinstance(citations, list) and citations:
+            result["research_citations"] = [
+                c for c in citations[:12] if isinstance(c, dict)
+                and isinstance(c.get("finding_index"), int)
+                and 0 <= c["finding_index"] < len(result["findings"])
+            ]
     # Preserve explicit omissions under the encoded transport budget, including
     # non-ASCII text. Never silently ship a prefix of invalid JSON.
     result["transport_truncated"] = False
     while len(json.dumps(result)) > 18000:
         result["transport_truncated"] = True
-        if result["requested_content"]:
+        if result.get("research_citations"):
+            result["research_citations"].pop()
+        elif result["requested_content"]:
             section = result["requested_content"][-1]
             if len(section["text"]) > 256:
                 section["text"] = section["text"][: len(section["text"]) // 2]

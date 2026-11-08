@@ -3,10 +3,33 @@
 from __future__ import annotations
 
 import hashlib
+import ipaddress
+from urllib.parse import urlsplit
 from pathlib import PurePosixPath
 from typing import Annotated, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
+
+
+def public_reference(value):
+    """Only safe public HTTPS source URLs may leave the local evidence store."""
+    if not isinstance(value, str) or len(value) > 512:
+        return None
+    try:
+        url = urlsplit(value)
+        host = (url.hostname or "").lower()
+        if (url.scheme != "https" or not host or url.username or url.password
+                or url.query or url.fragment or host == "localhost"
+                or host.endswith((".local", ".lan", ".internal", ".test"))):
+            return None
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                return None
+        except ValueError:
+            pass
+        return value
+    except ValueError:
+        return None
 
 
 class ResultFile(BaseModel):
@@ -29,6 +52,14 @@ class MemoryCandidate(BaseModel):
     text: Annotated[str, Field(min_length=1, max_length=240)]
     finding_index: Annotated[int | None, Field(ge=0, le=5)] = None
     source_url: Annotated[str | None, Field(max_length=512)] = None
+    evidence_id: Annotated[str | None, Field(pattern=r"^[a-f0-9]{24}$")] = None
+
+
+class ResearchCitation(BaseModel):
+    model_config = ConfigDict(extra="forbid", strict=True)
+    finding_index: Annotated[int, Field(ge=0, le=5)]
+    evidence_id: Annotated[str, Field(pattern=r"^[a-f0-9]{24}$")]
+    stance: Literal["supports", "contradicts"] = "supports"
 
 
 class ResultTools:
@@ -48,6 +79,7 @@ class ResultTools:
         files: Annotated[list[ResultFile], Field(max_length=4)] = [],
         content: Annotated[list[ResultText], Field(max_length=4)] = [],
         memory_candidates: Annotated[list[MemoryCandidate], Field(max_length=3)] = [],
+        research_citations: Annotated[list[ResearchCitation], Field(max_length=12)] = [],
     ):
         if not summary.strip():
             raise ValueError("Result summary must not be blank")
@@ -95,6 +127,34 @@ class ResultTools:
         for raw in content:
             item = ResultText.model_validate(raw)
             sections.append({**item.model_dump(), "source_kind": "worker_text"})
+        # A research citation must refer to source text read in this run.
+        citations = []
+        seen_citations = set()
+        for raw in research_citations:
+            citation = ResearchCitation.model_validate(raw)
+            if citation.finding_index >= len(findings):
+                raise ValueError("Research citation points outside published findings")
+            receipt = self.workspace.research_tools.research_evidence(
+                citation.evidence_id)["receipt"]
+            if not receipt["read_verified"]:
+                raise ValueError("Search snippets cannot be published as read citations")
+            marker = (citation.finding_index, citation.evidence_id, citation.stance)
+            if marker in seen_citations:
+                continue
+            seen_citations.add(marker)
+            citations.append({
+                **citation.model_dump(),
+                "source_id": receipt["source_id"],
+                "kind": receipt["kind"],
+                "title": receipt["title"][:200],
+                "location": receipt.get("location"),
+                "section": receipt.get("section"),
+                "document_sha256": receipt.get("document_sha256"),
+                "retrieved_at": receipt.get("retrieved_at"),
+                "verification": "source_retrieved_not_claim_verified",
+                **({"public_url": public_reference(receipt["public_url"])}
+                   if public_reference(receipt.get("public_url")) else {}),
+            })
         # Replace the staged selection only after every source has been read.
         self.workspace.published_result = self.workspace.clean(
             {
@@ -105,6 +165,7 @@ class ResultTools:
                 "limitations": limitations,
                 "requested_content": sections,
                 "memory_candidates": memory_candidates,
+                "research_citations": citations,
             }
         )
         return {
@@ -113,6 +174,7 @@ class ResultTools:
             "outcome": outcome,
             "content_sections": len(sections),
             "files": receipts,
+            "research_citations": len(citations),
             "verification": "worker_selection_not_task_verification",
         }
 
