@@ -183,7 +183,7 @@ def register(registry, results):
     registry.add(
         "publish_result",
         results.publish_result,
-        "Stage findings and selected actual file excerpts or worker text for the final AIOS result; replaces prior selection, does not send immediately or verify success",
+        "Stage findings and selected actual file excerpts or worker text for the final AIOS result. Select at most four sections total across files and content. Replaces prior selection, does not send immediately or verify success",
         "workspace.results",
         effect="write",
     )

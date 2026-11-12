@@ -146,11 +146,18 @@ class Workspace:
             return [self.clean(v) for v in value]
         return value
 
+    def retain_tool_result(self, result):
+        return self._write_result_artifact(json.dumps(self.clean(result), ensure_ascii=True))
+
+    def _write_result_artifact(self, encoded):
+        artifact = str(uuid4()) + ".json"
+        (self.artifacts / artifact).write_text(encoded, encoding="utf-8")
+        return artifact
+
     def bound_result(self, result):
         encoded = json.dumps(self.clean(result), ensure_ascii=True)
         if len(encoded) > 22000:
-            artifact = str(uuid4()) + ".json"
-            (self.artifacts / artifact).write_text(encoded, encoding="utf-8")
+            artifact = self._write_result_artifact(encoded)
             metadata = {
                 k: result[k]
                 for k in (

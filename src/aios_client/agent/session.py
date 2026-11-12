@@ -28,6 +28,7 @@ class AgentSession:
         progress,
         observe,
         worker_brief=None,
+        legacy_hud=None,
     ):
         self.model, self.model_id, self.workspace, self.spec = (
             model,
@@ -38,6 +39,14 @@ class AgentSession:
         self.journal, self.run_id = journal, run_id
         self.control, self.gate, self.deadline = control, gate, deadline
         self.progress, self.observe = progress, observe
+        self.hud_chars = len(worker_brief or legacy_hud or "")
+        if legacy_hud is not None:
+            system += "\nAIOS context:\n" + legacy_hud
+        if spec.required_checks:
+            system += (
+                "\nThe host runs the configured required_checks automatically after your final response. "
+                "Leave report-format checks to the host and verify the actual deliverables during work."
+            )
         self.registry = workspace.registry
         self.registry.read_only = self.registry.read_only or requires_read_only(spec.objective)
         if self.registry.read_only:
@@ -50,6 +59,7 @@ class AgentSession:
             self.instructions,
             workspace.clean,
             worker_brief=worker_brief,
+            retain_result=workspace.retain_tool_result,
         )
         self.tasks = TaskTools(self.record, progress, workspace.stop)
         self.tasks.register(self.registry)
@@ -124,6 +134,14 @@ class AgentSession:
                 "result_staged": self.workspace.published_result is not None,
             }
             messages = self.context.prepare()
+            tools = self.registry.catalog()
+            request_size = {
+                "messages_json_chars": len(json.dumps(messages)),
+                "history_json_chars": len(json.dumps(self.context.history)),
+                "tool_catalog_json_chars": len(json.dumps(tools)),
+                "hud_chars": self.hud_chars,
+                "compacted_exchanges": self.context.compacted,
+            }
             presented_guidance = {
                 path: item["sha256"] for path, item in self.instructions.loaded.items()
             }
@@ -135,7 +153,7 @@ class AgentSession:
                 response = self.model.completion(
                     self.model_id,
                     messages,
-                    self.registry.catalog(),
+                    tools,
                     timeout=min(
                         float(self.model.http.timeout.read or 120),
                         max(0.01, self.deadline - time.monotonic()),
@@ -149,7 +167,7 @@ class AgentSession:
             self.workspace.model_diagnostics = self.workspace.clean(diagnostics)
             raw = json.dumps(self.workspace.clean({k: response.get(k) for k in ("content", "tool_calls")}), ensure_ascii=True)
             self.record("model_response", {
-                "step": step + 1, **diagnostics,
+                "step": step + 1, **diagnostics, "request_size": request_size,
                 "message_excerpt": raw[:16000], "message_truncated": len(raw) > 16000,
             })
             if diagnostics.get("finish_reason") == "length":

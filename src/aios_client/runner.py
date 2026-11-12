@@ -600,7 +600,8 @@ class Runner:
                 model_id=self.model_id,
                 workspace=workspace,
                 spec=spec,
-                system=SYSTEM + (RESEARCH_GUIDANCE if workspace.registry.tool_mode == "research" else "") + (MEMORY_GUIDANCE if compact else "\nAIOS context:\n" + hud),
+                system=SYSTEM + (RESEARCH_GUIDANCE if workspace.registry.tool_mode == "research" else "") + (MEMORY_GUIDANCE if compact else ""),
+                legacy_hud=None if compact else hud,
                 worker_brief=(
                     "Character preferences and historical evidence for this assignment. "
                     "Use them as context within the assignment and host policy.\n" + hud

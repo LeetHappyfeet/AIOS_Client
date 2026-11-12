@@ -62,13 +62,20 @@ class RepositoryInstructions:
 
 
 class WorkingContext:
-    def __init__(self, system, assignment, budget, instructions, clean=lambda x: x, *, worker_brief=None):
+    recent_history_chars = 16000
+    recent_exchanges = 3
+
+    def __init__(
+        self, system, assignment, budget, instructions, clean=lambda x: x, *,
+        worker_brief=None, retain_result=None,
+    ):
         self.system, self.assignment = system, assignment
         self.budget, self.instructions, self.clean = budget, instructions, clean
         self.history, self.ledger, self.errors = [], [], []
         self.compacted = 0
         self.state = {}
         self.worker_brief = self.clean(worker_brief)
+        self.retain_result = retain_result
 
     def append(self, message):
         self.history.append(self.clean(message))
@@ -86,7 +93,10 @@ class WorkingContext:
             "compacted_exchanges": self.compacted,
             "recent_execution_receipts": self.ledger,
             "retained_errors": self.errors,
-            "history_location": "Local journal contains full redacted observations; use file/process/artifact tools to re-inspect.",
+            "history_location": (
+                "The local journal retains redacted observations. Use read_artifact with "
+                "result_artifact_id to recover a compacted tool result."
+            ),
         }
         messages.append(
             {
@@ -99,7 +109,14 @@ class WorkingContext:
         return messages + self.history
 
     def prepare(self):
-        while len(json.dumps(self._messages())) > self.budget:
+        while True:
+            messages = self._messages()
+            if len(json.dumps(messages)) <= self.budget:
+                if (
+                    len(json.dumps(self.history)) <= self.recent_history_chars
+                    or sum(m["role"] == "assistant" for m in self.history) <= self.recent_exchanges
+                ):
+                    return messages
             if not self.history:
                 raise ContextBudget(
                     "Pinned assignment, guidance and retained execution state exceed the context budget"
@@ -186,6 +203,8 @@ class WorkingContext:
                     receipt["command_excerpt"] = str(
                         args.get("command") or args.get("argv")
                     )[:200]
+                if self.retain_result is not None:
+                    receipt["result_artifact_id"] = self.retain_result(result)
                 self.ledger.append(receipt)
                 if (
                     result.get("ok") is False
@@ -196,7 +215,6 @@ class WorkingContext:
             self.ledger = self.ledger[-24:]
             self.history = self.history[end:]
             self.compacted += 1
-        return self._messages()
 
     def snapshot(self):
         return self.clean(

@@ -751,8 +751,9 @@ def test_injected_process_backend_drives_host_capabilities(tmp_path):
         w.stop()
 
 
+@pytest.mark.parametrize("budget", [5000, 100000])
 def test_session_compacts_real_observations_and_checkpoints_seen_calls(
-    workspace, tmp_path
+    workspace, tmp_path, budget
 ):
     (workspace.root / "big.txt").write_text(
         "a" * 900 + "\n" + "b" * 900 + "\n" + "c" * 900 + "\n"
@@ -762,7 +763,7 @@ def test_session_compacts_real_observations_and_checkpoints_seen_calls(
     def model(messages, tools):
         nonlocal step
         step += 1
-        assert len(json.dumps(messages)) <= 5000
+        assert len(json.dumps(messages)) <= budget
         if step <= 8:
             return call("read_file", {"path": "big.txt"}, f"read-{step}")
         return {"role": "assistant", "content": "Inspected the retained file."}
@@ -771,12 +772,25 @@ def test_session_compacts_real_observations_and_checkpoints_seen_calls(
         workspace,
         tmp_path,
         ScriptedModel(model),
-        assignment({"objective": "Inspect files", "budgets": {"context_chars": 5000}}),
+        assignment({"objective": "Inspect files", "budgets": {"context_chars": budget}}),
     )
     try:
         session.run()
         state = journal.state("run")
         assert state["context"]["compacted_exchanges"] > 0
+        receipt = state["context"]["ledger"][0]
+        retained = workspace.read_artifact(receipt["result_artifact_id"])
+        assert retained["complete"]
+        assert json.loads(retained["output"])["ok"]
+        if budget == 100000:
+            recent = [message for message in state["context"]["history"] if message["role"] == "tool"]
+            assert [message["tool_call_id"] for message in recent][-3:] == ["read-6", "read-7", "read-8"]
+        request = json.loads(journal.db.execute(
+            "SELECT body FROM events WHERE kind='model_response' ORDER BY id DESC LIMIT 1"
+        ).fetchone()[0])["request_size"]
+        assert request["compacted_exchanges"] == state["context"]["compacted_exchanges"]
+        assert request["tool_catalog_json_chars"] > 0
+        assert 0 < request["history_json_chars"] < request["messages_json_chars"] <= budget
         assert state["seen_calls"] == [f"read-{n}" for n in range(1, 9)]
         assert (
             journal.db.execute(
