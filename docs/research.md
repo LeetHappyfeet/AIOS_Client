@@ -188,3 +188,28 @@ is automatically inserted into character memory.
 No AIOS server schema or RDF ingestion code is changed by this pass.
 Citation-aware memory ingestion, source privacy policies, and independent
 source-fact verification require coordinated AIOS server work.
+
+
+## Hybrid discovery bridge v1 (feature branch, coordinated AIOS server)
+
+With AIOS also running `feature/hybrid-research-discovery-v1`, workspace
+protocol v3 advertises `research-discovery-v1`. A research-enabled worker
+then gains an additional model-facing `research_nominate` tool. The tool
+accepts an evidence ID from this run, an open AIOS dossier UUID owned by the
+originating character, and a short rationale. It can only nominate evidence
+that `research_read` successfully retrieved, not unexamined search snippets.
+
+Nominations are delivered to the server under the existing **live run lease**
+and recorded in `research_external_nomination`, not in the corpus or /char
+memory. A source nomination is a retrieval record, **not a verified claim**.
+The normal research report and memory candidate controls are unchanged.
+
+Create a dossier on AIOS first, then supply its returned ID in the authorized
+research assignment objective. No new research capability grants itself:
+operator source grants and workspace work-admission policies still apply.
+Older AIOS servers do not advertise this capability, so the extra client tool
+is not registered. No operator credential is copied to the client.
+
+The feature does not yet stage or upload complete documents. The next pass
+can link accepted nominations to the existing AIOS corpus importer with a
+separate content-transfer authorization boundary.
