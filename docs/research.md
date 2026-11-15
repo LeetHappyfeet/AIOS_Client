@@ -188,3 +188,31 @@ is automatically inserted into character memory.
 No AIOS server schema or RDF ingestion code is changed by this pass.
 Citation-aware memory ingestion, source privacy policies, and independent
 source-fact verification require coordinated AIOS server work.
+
+## Feature branch: external discovery bridge (nomination-only)
+
+In `feature/hybrid-research-discovery-bridge`, `publish_result` accepts optional
+`nominate_sources` (up to eight run-scoped evidence IDs) and
+`research_dossier_id` (optional AIOS dossier UUID). Example:
+
+```json
+{
+  "outcome": "completed",
+  "summary": "Compared two source passages",
+  "findings": ["A qualified sourced finding"],
+  "research_citations": [{"finding_index": 0, "evidence_id": "aaaaaaaaaaaaaaaaaaaaaaaa"}],
+  "nominate_sources": ["aaaaaaaaaaaaaaaaaaaaaaaa"],
+  "research_dossier_id": null
+}
+```
+
+These IDs must reference retrieved source text cited by findings in the same run.
+The tool rejects uncited snippets and nominations outside research mode. Private
+Calibre/local locations remain private metadata; only explicitly public HTTPS URLs
+can appear as public references. The final report carries bounded source-nomination
+metadata, not complete documents. AIOS is responsible for validating and storing it.
+This pass performs **no** corpus import, character acquisition, or belief admission.
+
+AIOS must run its matching feature branch migration first. The server protocol stays
+v3; this bridge uses existing `result_summary` delivery. Successful final-report
+transport only means a worker attested to retrieval, not source quality or truth.
