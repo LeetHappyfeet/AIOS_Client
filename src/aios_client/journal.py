@@ -210,22 +210,27 @@ class Journal:
                     self.db.execute(
                         "UPDATE deliveries SET failures=failures+1 WHERE id=?", (key,)
                     )
-                if exc.status != 409 or not path.endswith(("/observe", "/progress")):
+                is_finish = path.endswith("/finish")
+                if exc.status != 409 or not path.endswith(("/observe", "/progress", "/finish")):
                     raise
                 status_path = path.rsplit("/", 1)[0].replace(
                     "workspace-client/v3/", "workspace-client/"
                 )
-                state = api.request("GET", status_path)
-                if not state.get("cancel_requested") and state.get("status") not in {
+                remote = api.request("GET", status_path)
+                terminal = remote.get("status") in {
                     "cancelled",
                     "interrupted",
                     "failed",
                     "finished",
-                }:
+                }
+                if not terminal and (is_finish or not remote.get("cancel_requested")):
                     raise
-                self.event(
-                    run, "report_rejected", {"path": path, "reason": "Run stopped"}
+                reason = (
+                    f"AIOS already closed the run as {remote['status']}"
+                    if is_finish
+                    else "Run stopped"
                 )
+                self.event(run, "report_rejected", {"path": path, "reason": reason})
                 state = "rejected"
             except Exception:
                 with self.lock, self.db:
