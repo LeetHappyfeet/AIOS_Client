@@ -46,6 +46,9 @@ before citing; research_evidence confirms the retrieval receipt.
 Use publish_result with research_citations linking finding_index to a retrieved
 evidence_id and stance (supports or contradicts). A citation proves source text
 was retrieved, not that a claim is true. Distinguish disagreement and uncertainty.
+When AIOS supports research-discovery-v1, you may use research_nominate to
+register a retrieved source against a known, character-owned open dossier UUID.
+This registers evidence only, never imports corpus text or establishes truth.
 Nominate only concise, useful memory_candidates. For finding nominations include
 the supporting evidence_id and finding_index. Never nominate raw book text,
 terminal output, search-result lists, or private library paths as memories.
