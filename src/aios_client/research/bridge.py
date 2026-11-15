@@ -41,5 +41,5 @@ def register(registry, research_tools, submit):
         "research_nominate", research_nominate,
         "Nominate one actually read source for a character-owned AIOS research dossier; "
         "records retrieval provenance only, without importing text or creating knowledge.",
-        "research.read", effect="read",
+        "research.read", effect="write",
     )
