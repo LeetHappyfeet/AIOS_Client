@@ -8,7 +8,7 @@ import re
 from pathlib import PurePosixPath
 from typing import Literal
 from uuid import UUID
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_serializer, model_validator
 
 
 class Strict(BaseModel):
@@ -69,8 +69,12 @@ class Budgets(Strict):
     context_chars: int = Field(default=100000, ge=1000, le=500000)
 
 
+ExecutionMode = Literal["commands", "inspection_only"]
+
+
 class Assignment(Strict):
     objective: str = Field(min_length=1, max_length=16000)
+    execution_mode: ExecutionMode | None = None
     expected_outputs: list[Output] = Field(default_factory=list, max_length=50)
     required_checks: list[Check] = Field(default_factory=list, max_length=20)
     preserve_paths: list[str] = Field(default_factory=list, max_length=50)
@@ -87,6 +91,8 @@ class Assignment(Strict):
     def consistent(self):
         if bool(self.goal_id) != bool(self.attempt_id):
             raise ValueError("goal_id and attempt_id must be supplied together")
+        if self.execution_mode == "inspection_only" and (self.expected_outputs or self.required_checks):
+            raise ValueError("Inspection-only assignments cannot require output files or command checks")
         if len({c.id for c in self.required_checks}) != len(self.required_checks):
             raise ValueError("Check IDs must be unique")
         if not self.objective.strip():
@@ -97,6 +103,18 @@ class Assignment(Strict):
         ):
             raise ValueError("Assignment exceeds 20000 character budget")
         return self
+
+    @model_serializer(mode="wrap")
+    def serialize(self, handler):
+        data = handler(self)
+        if self.execution_mode is None:
+            data.pop("execution_mode", None)
+        return data
+
+    def inspection_only(self):
+        if self.execution_mode is None:
+            return requires_read_only(self.objective)
+        return self.execution_mode == "inspection_only"
 
     def digest(self):
         return hashlib.sha256(

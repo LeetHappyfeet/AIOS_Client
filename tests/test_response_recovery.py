@@ -1,10 +1,11 @@
 import json
+import sys
 
 import httpx
 import pytest
 
 from test_runtime import ScriptedModel, call, make_session
-from test_v3 import Service, make_runner, model_api
+from test_v3 import Service, make_runner, model_api, tool
 from aios_client.assignment import assignment, requires_read_only
 from aios_client.http import API, Model
 from aios_client.tools.registry import ToolArguments
@@ -171,3 +172,48 @@ def test_malformed_tool_then_empty_response_can_return_direct_report(tmp_path, m
 def test_explicit_inspection_constraints(text):
     assert requires_read_only(text)
     assert not requires_read_only("Create a calculator and test it")
+
+
+def test_explicit_command_mode_survives_read_only_wording(tmp_path, monkeypatch):
+    runner = make_runner(tmp_path, monkeypatch)
+    spec = assignment({
+        "objective": "Use read-only checks such as `docker --version`. Do not install anything.",
+        "execution_mode": "commands",
+    })
+    service = Service(spec)
+    runner.api = API("http://aios", transport=httpx.MockTransport(service.handle))
+    observed = []
+    argv = [sys.executable, "--version"]
+
+    def command_process():
+        return next((pid, record) for pid, record in runner.workspace.processes.items()
+                    if record["p"].args == argv)
+
+    def model(body):
+        observed.append({tool["function"]["name"] for tool in body["tools"]})
+        if len(observed) == 1:
+            return tool("run_command", {"argv": argv})
+        if len(observed) == 2:
+            process_id, _ = command_process()
+            return tool("wait_process", {"process_id": process_id, "until_complete": True}, "wait")
+        return {"role": "assistant", "content": '{"outcome":"completed","summary":"Version checked"}'}
+
+    runner.model = model_api(model)
+    try:
+        runner.work()
+        assert len(observed) == 3 and "run_command" in observed[0]
+        _, record = command_process()
+        assert record["p"].returncode == 0
+        assert service.bodies("/finish")[0]["status"] == "finished"
+    finally:
+        runner.close()
+
+
+def test_legacy_assignment_shape_and_inspection_fallback():
+    spec = assignment("read-only survey")
+    data = spec.model_dump(mode="json")
+    assert "execution_mode" not in data
+    assert spec.inspection_only()
+    assert assignment(data).digest() == spec.digest()
+    assert not assignment({**data, "execution_mode": "commands"}).inspection_only()
+    assert assignment({**data, "objective": "Survey", "execution_mode": "inspection_only"}).inspection_only()

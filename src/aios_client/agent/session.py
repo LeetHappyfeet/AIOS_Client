@@ -6,7 +6,6 @@ import json
 import time
 
 from ..tools.registry import ToolArguments
-from ..assignment import requires_read_only
 from .context import RepositoryInstructions, WorkingContext
 from .tasks import TaskBlocked, TaskTools
 
@@ -48,7 +47,7 @@ class AgentSession:
                 "Leave report-format checks to the host and verify the actual deliverables during work."
             )
         self.registry = workspace.registry
-        self.registry.read_only = self.registry.read_only or requires_read_only(spec.objective)
+        self.registry.read_only = self.registry.read_only or spec.inspection_only()
         if self.registry.read_only:
             system += "\nRead-only inspection is enforced: use inspect_environment, inspect_privileges and file reads; return JSON directly without creating files or launching commands."
         self.instructions = RepositoryInstructions(workspace)

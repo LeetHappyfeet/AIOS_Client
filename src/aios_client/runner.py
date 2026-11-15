@@ -15,7 +15,7 @@ from .agent.character_activity import (
     normalize_activity, plan as activity_plan, review as activity_review,
 )
 from .agent.tasks import TaskBlocked
-from .assignment import assignment, requires_read_only
+from .assignment import assignment
 from .config import aios_url
 from .coordination import environment_id, execution_slot
 from .http import API, APIError, APIUnavailable, Model
@@ -532,7 +532,7 @@ class Runner:
             spec = assignment(claim.get("assignment") or claim["objective"])
             if claim.get("assignment_hash") != spec.digest():
                 raise ValueError("Assignment hash mismatch")
-            workspace.registry.read_only = requires_read_only(spec.objective)
+            workspace.registry.read_only = spec.inspection_only()
             if workspace.registry.read_only and (spec.expected_outputs or spec.required_checks):
                 raise ValueError("Read-only inspection conflicts with expected output files or shell checks; update the AIOS reporting profile and submit a new request")
             deadline = started + spec.budgets.wall_seconds

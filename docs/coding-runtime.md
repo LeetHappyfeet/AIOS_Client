@@ -365,23 +365,23 @@ and Ubuntu with Python 3.11/3.12. It does not establish production model reliabi
 full terminal support or system administration readiness.
 ## Inspection and provider-response diagnostics
 
-Explicit `read-only`, `read only`, `no file creation or modification`, and
-`without creating or modifying any files` restrictions select a conservative
-inspection mode. This convention only reduces authority; it is not a general
-natural-language policy parser. The client hides and rejects write tools,
-arbitrary commands/stdin, Git subprocesses, and HTTP probes. `inspect_environment`
-collects OS/kernel, workspace path, effective identity, candidate directory access,
-disk space and common tool paths using fixed host APIs. It does not create test
-files or invoke sudo. Tool versions and sudo privileges remain unknown unless
-separately authorized and observed using `inspect_privileges` (enabled in the saved
-administration profile). File reads and direct JSON/text results are
-supported; client journals and audit artifacts still persist outside task output.
+AIOS seals an execution mode in new delegated assignments. In `commands` mode,
+the command tools available to the workspace remain exposed. Instructions such as
+“check without changing anything” guide the model; the worker account's OS
+permissions still apply. In `inspection_only` mode, the client hides and rejects
+commands/stdin, writes, Git subprocesses, and HTTP probes. Fixed inspection tools
+and permitted file reads remain available. An operator can require this mode in a
+capability profile. An assignment without a sealed mode retains the legacy
+read-only phrase convention and its original assignment hash.
 
-Update AIOS together with the client: its standard `workspace / experimental_task`
-profile now uses a direct final JSON response for read-only requests instead of
-requiring an on-disk experiment report. Existing queued assignments retain their
-original contract; conflicting output/check requirements fail explicitly. Submit
-a fresh request after updating. Custom operator checks are not silently removed.
+Reporting is independent. AIOS can request a direct JSON result while commands
+remain available. For the experimental-task preset, inline reporting removes the
+built-in report file and its format check. Operator-defined checks and outputs
+are retained, or the assignment is blocked if they conflict with the request.
+
+Update AIOS and AIOS-Client together before submitting new delegated tasks.
+Older clients do not understand the sealed execution mode. Existing queued
+assignments retain their original contract.
 
 Generation endpoint **Maximum response tokens** (`max_tokens` in configuration)
 defaults to 4096 and accepts 128–32768. Set it within the provider/model's supported
