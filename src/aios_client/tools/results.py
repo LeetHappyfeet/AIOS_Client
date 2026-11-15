@@ -80,6 +80,8 @@ class ResultTools:
         content: Annotated[list[ResultText], Field(max_length=4)] = [],
         memory_candidates: Annotated[list[MemoryCandidate], Field(max_length=3)] = [],
         research_citations: Annotated[list[ResearchCitation], Field(max_length=12)] = [],
+        nominate_sources: Annotated[list[Annotated[str, Field(pattern=r"^[a-f0-9]{24}$")], Field(max_length=8)] = [],
+        research_dossier_id: str | None = None,
     ):
         if not summary.strip():
             raise ValueError("Result summary must not be blank")
@@ -155,6 +157,37 @@ class ResultTools:
                 **({"public_url": public_reference(receipt["public_url"])}
                    if public_reference(receipt.get("public_url")) else {}),
             })
+        # Discovery nominations never grant fetch/import authority or create facts.
+        # Require a citation from a retrieved source in this exact work run.
+        nominations = []
+        if nominate_sources:
+            from uuid import UUID
+            if self.workspace.registry.tool_mode != "research":
+                raise ValueError("Source nominations require research tool mode")
+            if research_dossier_id:
+                try:
+                    UUID(research_dossier_id)
+                except (ValueError, TypeError):
+                    raise ValueError("Invalid research dossier ID") from None
+            citation_ids = {c["evidence_id"] for c in citations}
+            for evidence_id in dict.fromkeys(nominate_sources):
+                if evidence_id not in citation_ids:
+                    raise ValueError("Nomination must cite a retrieved source in the report")
+                receipt = self.workspace.research_tools.research_evidence(evidence_id)["receipt"]
+                if not receipt.get("read_verified"):
+                    raise ValueError("Search snippet is not a retrieved source")
+                nominations.append({
+                    "evidence_id": evidence_id,
+                    "source_id": receipt["source_id"],
+                    "kind": receipt["kind"],
+                    "title": receipt["title"],
+                    "document_sha256": receipt.get("document_sha256"),
+                    "section": receipt.get("section"),
+                    "location": receipt.get("location"),
+                    "public_url": public_reference(receipt.get("public_url")),
+                    "retrieved_at": receipt.get("retrieved_at"),
+                    "verification": "worker_retrieved_not_claim_verified",
+                })
         # Replace the staged selection only after every source has been read.
         self.workspace.published_result = self.workspace.clean(
             {
@@ -166,6 +199,8 @@ class ResultTools:
                 "requested_content": sections,
                 "memory_candidates": memory_candidates,
                 "research_citations": citations,
+                "source_nominations": nominations,
+                "research_dossier_id": research_dossier_id if nominations else None,
             }
         )
         return {
@@ -175,6 +210,7 @@ class ResultTools:
             "content_sections": len(sections),
             "files": receipts,
             "research_citations": len(citations),
+            "source_nominations": len(nominations),
             "verification": "worker_selection_not_task_verification",
         }
 
