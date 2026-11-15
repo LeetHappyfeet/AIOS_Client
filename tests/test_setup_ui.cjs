@@ -103,5 +103,29 @@ async function invoke(code) { await vm.runInContext(code, context); }
   element('gRouting').value = 'manual';
   await invoke('routingVisibility()');
   assert.equal(element('manualRouting').hidden, false);
+  element('events').textContent = '[{"kind":"tool_result"}]\n';
+  let copiedText;
+  context.navigator = {clipboard: {async writeText(text) { copiedText = text; }}};
+  await invoke("copyLog('events')");
+  assert.equal(copiedText, element('events').textContent);
+
+  context.navigator = {};
+  let selectedNode;
+  let selection;
+  context.document.createRange = () => ({
+    selectNodeContents(node) { selectedNode = node; },
+  });
+  context.window = {getSelection: () => ({
+    removeAllRanges() { selection = null; },
+    addRange(range) { selection = range; },
+  })};
+  context.document.execCommand = action => {
+    assert.equal(action, 'copy');
+    return false;
+  };
+  await invoke("copyLog('events')");
+  assert.equal(selectedNode, element('events'));
+  assert.ok(selection);
+  assert.match(element('copyStatus').textContent, /Ctrl\+C/);
   console.log('Setup credential and HTTP policy UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -46,7 +46,12 @@
 <small>For linked work, choose Listen and submit the bounded assignment through AIOS with the separate operator credential. The host runs these checks after the model finishes. Without required checks, completion stays unverified. Goal completion requires separate operator review in AIOS.</small>
 <button onclick="start(false)">Run task</button><button class="secondary" onclick="start(true)">Listen for AIOS work</button><button class="secondary" onclick="stop()">Stop</button>
 <small>Multiple agents can listen together. Tasks sharing a directory take turns; administration-enabled profiles reserve the host during execution. Shell commands run with this machine account's permissions. Use a dedicated development VM/container. No graphical IDE is required.</small>
-<pre id="status" aria-live="polite">No runs yet.</pre><details><summary>Latest activity</summary><pre id="events">Select an agent with a run.</pre></details></section>
+<button type="button" class="secondary" onclick="copyLog('status')">Copy run status</button>
+<pre id="status" aria-live="polite">No runs yet.</pre>
+<details><summary>Latest activity</summary>
+<button type="button" class="secondary" onclick="copyLog('events')">Copy activity log</button>
+<pre id="events">Select an agent with a run.</pre></details>
+<small id="copyStatus" role="status"></small></section>
 <section><h2>Configuration</h2><p>Profiles contain references to credentials, never the keys themselves.</p><button class="secondary" onclick="exportConfig()">Export profiles without keys</button><label>Import profiles<input id="import" type="file" accept="application/json"></label><small>Import replaces saved profiles. Stop active work first.</small></section>
 </main><script>
 const token='__CSRF__';let config;const $=id=>document.getElementById(id);const v=id=>$(id).value.trim();
@@ -77,7 +82,44 @@ function routingVisibility(){$('manualRouting').hidden=v('gRouting')!=='manual';
 async function testAgent(){await act(async()=>notice(JSON.stringify(await api('test-agent',{agent:v('gName')}),null,2)))}
 async function start(serve){await act(async()=>{const lines=id=>v(id).split('\n').map(x=>x.trim()).filter(Boolean);const assignment={objective:v('task'),required_checks:lines('checks').map((command,i)=>({id:'check-'+(i+1),command})),expected_outputs:lines('outputs').map(path=>({path})),preserve_paths:lines('preserve'),goal_id:v('goalId')||null,attempt_id:v('attemptId')||null,budgets:{wall_seconds:Number(v('wallSeconds')),model_steps:Number(v('modelSteps'))}};await api('start',{agent:v('runAgent'),assignment,serve});notice('Agent started.');await poll()})}
 async function stop(){await act(async()=>{await api('stop',{agent:v('runAgent')});notice('Stop requested.')})}
-async function poll(){try{const rows=await api('status');$('status').textContent=rows.length?JSON.stringify(rows,null,2):'No agent profiles yet.';const selected=rows.find(x=>x.agent===v('runAgent'));if(selected?.runs.length)$('events').textContent=JSON.stringify(await api('events?agent='+encodeURIComponent(selected.agent)+'&run='+encodeURIComponent(selected.runs[0].id)),null,2)}catch(e){$('status').textContent=e.message}}
+async function copyLog(id){
+  const log=$(id), feedback=$('copyStatus');
+  if(navigator.clipboard?.writeText){
+    try{
+      await navigator.clipboard.writeText(log.textContent);
+      feedback.textContent='Copied to clipboard.';
+      return;
+    }catch{}
+  }
+  const selection=window.getSelection(), range=document.createRange();
+  range.selectNodeContents(log);
+  selection.removeAllRanges();
+  selection.addRange(range);
+  let copied=false;
+  try{copied=document.execCommand('copy')}catch{}
+  if(copied)selection.removeAllRanges();
+  feedback.textContent=copied?'Copied to clipboard.':'Log selected. Press Ctrl+C or Command+C to copy.';
+}
+function showLog(id,text){if($(id).textContent!==text)$(id).textContent=text}
+let pollVersion=0;
+async function poll(){
+  const version=++pollVersion, agent=v('runAgent');
+  const current=()=>version===pollVersion && agent===v('runAgent');
+  try{
+    const rows=await api('status');
+    if(!current())return;
+    showLog('status',rows.length?JSON.stringify(rows,null,2):'No agent profiles yet.');
+    const run=rows.find(x=>x.agent===agent)?.runs[0];
+    if(!run){showLog('events','Select an agent with a run.');return}
+    const events=await api('events?agent='+encodeURIComponent(agent)+'&run='+encodeURIComponent(run.id));
+    if(current())showLog('events',JSON.stringify(events,null,2));
+  }catch(e){if(current())showLog('status',e.message)}
+}
+$('runAgent').onchange=()=>{
+  showLog('events','Loading activity…');
+  $('copyStatus').textContent='';
+  void poll();
+};
 function exportConfig(){const a=document.createElement('a');const u=URL.createObjectURL(new Blob([JSON.stringify(config,null,2)],{type:'application/json'}));a.href=u;a.download='aios-client-profiles.json';a.click();setTimeout(()=>URL.revokeObjectURL(u),1000)}
 $('import').onchange=()=>act(async()=>{const next=JSON.parse(await $('import').files[0].text());await api('config',next);config=next;refresh();notice('Profiles imported.')});
 $('aSaved').onchange=()=>{const name=v('aSaved'),p=config.aios[name];$('aName').value=name;for(const [id,k]of [['aHost','host'],['aPort','port'],['aScheme','scheme'],['aPath','base_path'],['aRef','secret_ref']])$(id).value=p?.[k]??(id==='aPort'?8000:id==='aScheme'?'http':'');$('aKey').value='';credentialStatus('a')};

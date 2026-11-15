@@ -280,10 +280,13 @@ class ProcessTools:
         self,
         process_id: str,
         cursor: Annotated[int, Field(ge=0)] = 0,
-        wait_seconds: Annotated[float, Field(ge=0, le=30)] = 10,
+        wait_seconds: Annotated[float | None, Field(ge=0, le=30)] = None,
+        until_complete: bool = False,
     ):
         record = self.processes[process_id]
         # The session caps command_timeout to its remaining assignment wall time.
+        if wait_seconds is None:
+            wait_seconds = 120 if until_complete else 10
         deadline = time.monotonic() + min(wait_seconds, self.command_timeout)
         reason = "wait_timeout"
         with record["changed"]:
@@ -291,8 +294,11 @@ class ProcessTools:
                 if self.cancelled.is_set():
                     reason = "workspace_stopped"
                     break
-                size = record["log"].stat().st_size if record["log"].exists() else 0
-                if size > cursor:
+                if (
+                    not until_complete
+                    and record["log"].exists()
+                    and record["log"].stat().st_size > cursor
+                ):
                     reason = "output"
                     break
                 if record["done"].is_set():
@@ -390,7 +396,7 @@ def register(registry, processes):
     for name, description in {
         "run_command": "Start a command or argv process; elevated=true requests noninteractive sudo when administration is enabled. Follow its process handle",
         "read_process": "Read bounded UTF-8 output by byte cursor, exit status, cancellation and input status",
-        "wait_process": "Wait up to 30 seconds for output or completion, then read from cursor; wait timeout is not command failure",
+        "wait_process": "Read from cursor after output or completion (default 10 seconds). For noninteractive commands, set until_complete=true and omit wait_seconds to wait up to 120 seconds within the assignment deadline. Explicit wait_seconds is capped at 30. Reuse next_cursor for subsequent reads. A wait timeout does not end the process.",
         "write_process": "Queue bounded UTF-8 stdin; optionally close stdin. Queued does not mean delivered",
         "stop_process": "Stop an owned process and its child group",
         "process_status": "List owned process handles and observed lifecycle states",

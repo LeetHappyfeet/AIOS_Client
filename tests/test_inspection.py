@@ -226,6 +226,27 @@ def test_wait_process_wakes_on_workspace_cancellation(workspace):
         timer.join()
 
 
+def test_wait_process_until_complete_returns_output_and_exit_together(workspace):
+    task = workspace.execute(
+        "run_command",
+        {
+            "argv": [
+                sys.executable,
+                "-u",
+                "-c",
+                "import time; print('starting'); time.sleep(0.2); print('failed'); raise SystemExit(3)",
+            ],
+        },
+    )
+    result = workspace.execute(
+        "wait_process", {"process_id": task["process_id"], "until_complete": True}
+    )
+    assert result["wait_reason"] == "completed"
+    assert result["output_complete"]
+    assert result["output"].splitlines() == ["starting", "failed"]
+    assert result["exit_code"] == 3
+
+
 def test_batched_reads_make_progress_with_long_lines_and_small_budget(workspace):
     (workspace.root / "long").write_text("x" * 2000 + "\nend\n")
     first = workspace.execute(

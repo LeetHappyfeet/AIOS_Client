@@ -62,7 +62,9 @@ For authorized administration, call inspect_privileges first, then use run_comma
 Elevation uses noninteractive sudo; never request, store or transmit a sudo password.
 Administration settings do not override assignment constraints, including no-sudo restrictions.
 A sudo probe is evidence for that probe only; report actual elevated command results.
-Follow running commands using wait_process (or read_process); a started process is not a successful verification.
+For noninteractive commands whose result you need, call wait_process with until_complete=true and omit wait_seconds.
+For interactive commands, wait for output and pass next_cursor on subsequent reads to avoid replaying logs.
+A started process is not a successful verification. Keep routine command output concise and preserve errors.
 Continue file/search next_cursor with the same options until null; a truncated page is not a complete search.
 Use read_files to compare related source ranges; retry remaining ranges when its budget is reached.
 Use git_status and git_diff to inspect changes. Do not commit, push, or deploy unless the assignment asks.
