@@ -607,7 +607,8 @@ class Runner:
                         'POST', v3_prefix + '/work-result', json={**query, **lease}
                     )) if work_history else None,
                 ).register(workspace.registry)
-            if self.protocol_version == 3 and workspace.research_tools.sources:
+            if (self.protocol_version == 3 and workspace.research_tools.sources
+                    and "research-discovery-v1" in self.server_capabilities):
                 register_research_bridge(
                     workspace.registry, workspace.research_tools,
                     lambda payload: self.api.request(
