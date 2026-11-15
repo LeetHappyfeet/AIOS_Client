@@ -11,7 +11,9 @@ from uuid import uuid4
 
 from .activity import ActivityLog, ProgressLimiter
 from .agent.session import AgentSession
-from .agent.character_activity import plan as activity_plan, review as activity_review
+from .agent.character_activity import (
+    normalize_activity, plan as activity_plan, review as activity_review,
+)
 from .agent.tasks import TaskBlocked
 from .assignment import assignment, requires_read_only
 from .config import aios_url
@@ -549,6 +551,8 @@ class Runner:
                 raise ValueError(baseline.get("error", "Baseline snapshot incomplete"))
             deadline = started + spec.budgets.wall_seconds
             hud, compact, character_activity = self.context(bid, rid, lease)
+            if character_activity and normalize_activity(character_activity) is None:
+                character_activity = None
             if not compact:
                 self._deliver(
                     rid,
