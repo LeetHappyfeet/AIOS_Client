@@ -76,8 +76,7 @@ class Model(API):
             json={
                 "model": model,
                 "messages": messages,
-                "tools": tools,
-                "tool_choice": "auto",
+                **({"tools": tools, "tool_choice": "auto"} if tools else {}),
                 "stream": False,
                 "max_tokens": self.max_tokens,
             },
