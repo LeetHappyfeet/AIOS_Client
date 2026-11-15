@@ -216,7 +216,9 @@ class Runner:
                 hud = self.api.request(
                     "POST",
                     f"workspace-client/v3/{binding_id}/runs/{run_id}/context",
-                    json={**lease, "compact": True} if WORKSPACE_MEMORY in self.server_capabilities else lease,
+                    json={**lease,
+                          "compact": WORKSPACE_MEMORY in self.server_capabilities,
+                          "character_activity": "character-activity-v1" in self.server_capabilities},
                 )
             else:
                 hud = self.api.request("POST", f"workspace-client/{binding_id}/context")
