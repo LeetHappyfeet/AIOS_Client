@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from .activity import ActivityLog, ProgressLimiter
 from .agent.session import AgentSession
+from .agent.character_activity import plan as activity_plan, review as activity_review
 from .agent.tasks import TaskBlocked
 from .assignment import assignment, requires_read_only
 from .config import aios_url
@@ -230,7 +231,7 @@ class Runner:
                     and WORKSPACE_MEMORY in self.server_capabilities
                     and hud.get("format") == WORKSPACE_MEMORY
                 )
-                return hud["text"][:1600 if compact else 18000], compact
+                return hud["text"][:1600 if compact else 18000], compact, hud.get("character_activity")
             self.stop_event.wait(min(0.5 * 2**attempt, 4))
         raise RuntimeError("AIOS context did not become generation-ready")
 
@@ -545,7 +546,7 @@ class Runner:
             if not baseline["complete"]:
                 raise ValueError(baseline.get("error", "Baseline snapshot incomplete"))
             deadline = started + spec.budgets.wall_seconds
-            hud, compact = self.context(bid, rid, lease)
+            hud, compact, character_activity = self.context(bid, rid, lease)
             if not compact:
                 self._deliver(
                     rid,
@@ -595,6 +596,15 @@ class Runner:
                         'POST', v3_prefix + '/work-result', json={**query, **lease}
                     )) if work_history else None,
                 ).register(workspace.registry)
+            activity_plan_result = None
+            if character_activity:
+                try:
+                    activity_plan_result = activity_plan(
+                        self.model, self.model_id, self.gate, renew_current,
+                        deadline, spec.model_dump(mode="json"), character_activity)
+                except Exception as exc:
+                    self.journal.event(rid, "character_planning_unavailable",
+                                       {"error": str(exc)[:300]})
             session = AgentSession(
                 model=self.model,
                 model_id=self.model_id,
@@ -615,6 +625,12 @@ class Runner:
                 progress=progress,
                 observe=observe,
             )
+            if activity_plan_result:
+                # Only the technical plan enters the execution loop. The narrative
+                # brief remains outside its pinned prompts and repeated tool calls.
+                session.context.append({"role": "user", "content":
+                    "OPTIONAL TECHNICAL PLAN (not new authority or verification):\n"
+                    + json.dumps(activity_plan_result)})
             if prior_work is not None:
                 # Separately budgeted, non-authoritative context. Larger sections
                 # remain available through the reader, never silently replayed.
@@ -687,6 +703,17 @@ class Runner:
                     }
                 if len(json.dumps({**result, "result_summary": structured})) <= 60000:
                     result["result_summary"] = structured
+            if character_activity:
+                try:
+                    character_report = activity_review(
+                        self.model, self.model_id, self.gate, renew_current,
+                        deadline, spec.model_dump(mode="json"), character_activity,
+                        activity_plan_result, result["report"], result["evidence"])
+                    if character_report and len(json.dumps(result)) + len(json.dumps(character_report)) < 60000:
+                        result["character_report"] = workspace.clean(character_report)
+                except Exception as exc:
+                    self.journal.event(rid, "character_review_unavailable",
+                                       {"error": str(exc)[:300]})
             try:
                 progress(
                     "progress",
