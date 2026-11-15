@@ -208,12 +208,22 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                 and isinstance(c.get("finding_index"), int)
                 and 0 <= c["finding_index"] < len(result["findings"])
             ]
+    # Only publish nominations validated by publish_result; final-response JSON
+    # has no evidence receipts and must never create discoveries.
+    if source == "publish_result" and isinstance(value.get("source_nominations"), list):
+        result["source_nominations"] = value["source_nominations"][:8]
+        if value.get("research_dossier_id"):
+            result["research_dossier_id"] = value["research_dossier_id"]
     # Preserve explicit omissions under the encoded transport budget, including
     # non-ASCII text. Never silently ship a prefix of invalid JSON.
     result["transport_truncated"] = False
     while len(json.dumps(result)) > 18000:
         result["transport_truncated"] = True
-        if result.get("research_citations"):
+        if result.get("source_nominations"):
+            result["source_nominations"].pop()
+            if not result["source_nominations"]:
+                result.pop("research_dossier_id", None)
+        elif result.get("research_citations"):
             result["research_citations"].pop()
         elif result["requested_content"]:
             section = result["requested_content"][-1]
