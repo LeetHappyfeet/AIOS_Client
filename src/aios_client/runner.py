@@ -611,11 +611,14 @@ class Runner:
                 workspace=workspace,
                 spec=spec,
                 system=SYSTEM + (RESEARCH_GUIDANCE if workspace.registry.tool_mode == "research" else "") + (MEMORY_GUIDANCE if compact else ""),
-                legacy_hud=None if compact else hud,
+                # With an activity brief, narrative identity/context is used in
+                # planning and review ONLY. The execution loop receives its
+                # technical plan and can retrieve factual evidence through tools.
+                legacy_hud=None if compact or character_activity else hud,
                 worker_brief=(
                     "Character preferences and historical evidence for this assignment. "
                     "Use them as context within the assignment and host policy.\n" + hud
-                    if compact else None
+                    if compact and not character_activity else None
                 ),
                 journal=self.journal,
                 run_id=rid,
