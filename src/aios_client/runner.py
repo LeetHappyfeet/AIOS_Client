@@ -23,6 +23,7 @@ from .journal import Journal
 from .protocol import negotiate
 from .reporting import result_summary, stage_memory
 from .research.sources import load_sources
+from .research.bridge import register as register_research_bridge
 from .tools.recall import RemoteTools
 from .verification import bounded_text, snapshot, verify
 from .workspace import Workspace
@@ -456,6 +457,8 @@ class Runner:
             ),
             tool_mode=self.profile.get("tool_mode", "workspace"),
             research_index_path=self.directory / "research-index.sqlite3",
+            research_evidence_path=self.directory / "research-evidence.sqlite3",
+            research_run_id=rid,
         )
         lease_stop = threading.Event()
         lease_error = []
@@ -604,6 +607,14 @@ class Runner:
                         'POST', v3_prefix + '/work-result', json={**query, **lease}
                     )) if work_history else None,
                 ).register(workspace.registry)
+            if self.protocol_version == 3 and workspace.research_tools.sources:
+                register_research_bridge(
+                    workspace.registry, workspace.research_tools,
+                    lambda payload: self.api.request(
+                        "POST", v3_prefix + "/research/nominate",
+                        json={**lease, **payload},
+                    ),
+                )
             activity_plan_result = None
             if character_activity:
                 try:
