@@ -79,6 +79,12 @@ def test_expired_nonterminal_progress_and_finish_are_deferred_not_lost(tmp_path)
             "SELECT kind FROM events WHERE run=? AND kind='delivery_deferred'",
             (RUN,),
         ).fetchall()) == 2
+        journal.flush(api)
+        assert len(journal.db.execute(
+            "SELECT kind FROM events WHERE run=? AND kind='delivery_deferred'",
+            (RUN,),
+        ).fetchall()) == 2  # repeated polling does not inflate audit log
+        assert len(pending(journal)) == 2
 
         # The next AIOS claim has interrupted the expired run. Previously queued
         # notifications can now be rejected with a durable audit trail.
