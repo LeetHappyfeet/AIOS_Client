@@ -438,3 +438,59 @@ def test_candidate_after_sixth_position_survives_research_context_ledger():
     assert any(item["evidence_id"] == expected_id
                for item in tool.control.snapshot()["candidates"])
     assert tool.recommended_unread()["evidence_id"] == expected_id
+
+
+def test_calibre_404_diagnoses_root_and_recovers_via_broad_metadata():
+    requests = []
+    def serve(request):
+        requests.append(str(request.url))
+        if request.url.path == "/opds":
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=f'<feed xmlns="{ATOM}"><link rel="search" href="/opds/search/{{searchTerms}}"/></feed>')
+        if "all%3A" in str(request.url):
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=FEED)
+        return httpx.Response(404)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    response = tool.research_search("laurentide ice sheet", "calibre")
+    assert response["status"] == "ok"
+    assert response["search_mode"] == "metadata_broad"
+    assert response["full_text_error"] == "http_status_404"
+    assert len(requests) == 4
+    assert sum(url.endswith("/opds") for url in requests) == 1
+    assert tool.calibre_search_probes["calibre"]["advertised_search"] is True
+
+
+def test_calibre_all_query_failure_preserves_exact_http_error():
+    def serve(request):
+        if request.url.path == "/opds":
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=f'<feed xmlns="{ATOM}"></feed>')
+        return httpx.Response(404)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    response = tool.research_search("laurentide ice sheet", "calibre")
+    assert response["status"] == "source_error"
+    assert response["errors"]["calibre"] == "http_status_404"
+    assert tool.calibre_search_probes["calibre"]["advertised_search"] is False
+    assert response["error_details"]["calibre"]["final_search_error"] == "http_status_404"
+
+
+def test_calibre_configurable_larger_document_download(monkeypatch):
+    # A 7 MiB PDF exceeds the previous global 6 MiB bound but fits the
+    # per-source default (12 MiB), without relaxing extracted-text limits.
+    seen_limits = []
+    def serve(request):
+        if "/search/" in request.url.path:
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=FEED)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=b"x" * (7 * 1024 * 1024))
+    def extraction(data, ext, *, max_bytes):
+        seen_limits.append((len(data), max_bytes))
+        return [("page:1", "Ice flow observations")], []
+    monkeypatch.setattr("aios_client.research.tools.extract_document", extraction)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    search = tool.research_search("glacier", "calibre")
+    result = tool.research_read(search["results"][0]["evidence_id"])
+    assert result["text"] == "Ice flow observations"
+    assert seen_limits == [(7 * 1024 * 1024, 12 * 1024 * 1024)]
