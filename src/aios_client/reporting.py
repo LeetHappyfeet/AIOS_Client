@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from .tools.results import MemoryCandidate
 from .verification import bounded_text
 
-REPORT = re.compile(r"aios-experiment-[0-9a-fA-F-]{36}\.json\Z")
+REPORT = re.compile(r"aios-(?:work-report|experiment)-[0-9a-fA-F-]{36}\.json\Z")
 
 
 def _object(text):
@@ -87,9 +87,9 @@ def stage_memory(workspace, result, report, *, nominated):
 
 
 def result_summary(workspace, spec, report, *, execution_failed=False):
-    """Prefer a structured final answer; bridge existing experimental JSON reports.
+    """Prefer a structured final answer; bridge workspace JSON reports.
 
-    Only explicitly expected experimental reports are opened. Report files must
+    Only explicitly expected work reports are opened. Report files must
     match the immutable-check snapshot; their statements remain worker claims.
     Never follow artifact paths supplied by the model to collect more files.
     """

@@ -8,13 +8,12 @@ from __future__ import annotations
 
 import json
 import os
-import re
 
-REPORT_NAME = re.compile(r"aios-experiment-[0-9a-fA-F-]{36}\.json\Z")
+from ..reporting import REPORT
 
 
 def materialize_research_report(workspace, spec, report):
-    """Create only a missing, explicitly expected, root-level experiment JSON file."""
+    """Create only a missing, explicitly expected, root-level work report."""
     if getattr(workspace.registry, "tool_mode", None) != "research":
         return []
     if workspace.registry.read_only or spec.inspection_only():
@@ -44,7 +43,7 @@ def materialize_research_report(workspace, spec, report):
     created = []
     for output in spec.expected_outputs:
         path = output.path
-        if output.kind != "file" or "/" in path or not REPORT_NAME.fullmatch(path):
+        if output.kind != "file" or "/" in path or not REPORT.fullmatch(path):
             continue
         workspace.guard()
         target = workspace.path(path)

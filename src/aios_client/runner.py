@@ -100,7 +100,7 @@ Use host_info before assuming an OS or shell. argv avoids shell quoting; stdin i
 Use inspect_path for filesystem diagnostics and search_process_output/process_output_summary to inspect noisy command logs.
 HTTP probes only reach the operator-enabled http_origins from host_info; no redirects or credential forwarding.
 Use publish_result to select substantive findings and actual file excerpts for AIOS before finishing.
-For research assignments, finalize with JSON containing objective, outcome, evidence, and limitations. If the assignment expects a root-level aios-experiment-UUID.json file, the host may create that exact missing file from your final JSON before verification; do not claim it was written yourself unless verified.
+For research assignments, finalize with JSON containing objective, outcome, evidence, and limitations. If the assignment expects a root-level work report JSON file, the host may create that exact missing file from your final JSON before verification; do not claim it was written yourself unless verified.
 Publication is staged until the final report, not immediately delivered or independent proof of task success.
 Working history can be compacted; use retained receipts and re-read files before editing stale content.
 Never claim a test passed without observing its exit status. There is no simulated terminal or world.
@@ -355,6 +355,15 @@ class Runner:
                     self.last_error = str(exc)
                     self.stop_event.wait(2)
                     continue
+                listener = {"worker_key": self.profile["username"]}
+                if self.profile.get("tool_mode") == "research":
+                    try:
+                        listener["research_ready"] = bool(load_sources(
+                            self.store.path.parent / "research_sources.json",
+                            self.profile.get("research_sources", []),
+                        ))
+                    except (OSError, ValueError):
+                        listener["research_ready"] = False
                 with execution_slot(self.profile['workspace'], self.profile.get('administration_enabled', False)) as acquired:
                     if not acquired:
                         if getattr(self, 'listener_status', None) != 'waiting_workspace':
@@ -364,7 +373,7 @@ class Runner:
                         if automatic and 'shared-environments-v1' in self.server_capabilities:
                             try:
                                 heartbeat = self.api.request('POST', f'workspace-client/registrations/{registration_id}/heartbeat',
-                                                             json={'worker_key': self.profile['username']})
+                                                             json=listener)
                                 if heartbeat['status'] == 'needs_authorization':
                                     self.listener_status = 'needs_authorization'
                             except (APIUnavailable, APIError) as exc:
@@ -381,7 +390,7 @@ class Runner:
                         if automatic:
                             receipt = self.api.request('POST',
                                 f'workspace-client/registrations/{registration_id}/claim',
-                                json={'worker_key': self.profile['username']})
+                                json=listener)
                             claimed = receipt['run']
                             if claimed:
                                 bid = receipt['binding_id']
@@ -393,7 +402,7 @@ class Runner:
                         else:
                             claimed = self.api.request(
                                 'POST', f'workspace-client/{bid}/claim',
-                                json={'worker_key': self.profile['username'], 'protocol_version': self.protocol_version},
+                                json={**listener, "protocol_version": self.protocol_version},
                             )['run']
                     except (APIUnavailable, APIError) as exc:
                         if not serve or (
