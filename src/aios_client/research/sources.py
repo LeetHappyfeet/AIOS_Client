@@ -27,6 +27,7 @@ class ResearchSource(BaseModel):
     root: str | None = None
     read_origins: list[str] = Field(default_factory=list, max_length=20)
     indexed: bool = False
+    max_document_bytes: int = Field(default=12 * 1024 * 1024, ge=1024 * 1024, le=24 * 1024 * 1024)
 
     @model_validator(mode="after")
     def validate_source(self):
