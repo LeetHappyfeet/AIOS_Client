@@ -376,14 +376,19 @@ class ResearchTools:
             self.source_failures[sid] = (self.source_failures.get(sid, 0) + 1
                                          if sid in errors else 0)
         self.search_cache[key] = result
-        for hit in result.get("results", [])[:4]:
+        # Preserve more than the first few hits: a relevant book can be below
+        # catalog noise in the same OPDS result page. Keep only identifiers and
+        # bounded titles, never full book text or private acquisition URLs.
+        for hit in result.get("results", [])[:10]:
             candidate = {"evidence_id": hit["evidence_id"],
                          "title": hit.get("title", "")[:100],
                          "source_id": hit["source_id"],
-                         "status": "discovery_only"}
-            if candidate not in self.control.candidates:
+                         "status": "discovery_only",
+                         "readable": bool(hit.get("readable", True))}
+            if not any(x["evidence_id"] == candidate["evidence_id"]
+                       for x in self.control.candidates):
                 self.control.candidates.append(candidate)
-        self.control.candidates = self.control.candidates[-12:]
+        self.control.candidates = self.control.candidates[-20:]
         response = result.copy()
         response["results"] = response["results"][:limit]
         response["source_health"] = {sid: {"consecutive_failures": failures}
