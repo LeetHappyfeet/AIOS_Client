@@ -49,6 +49,7 @@ class EvidenceStore:
             "source_id": item["source_id"],
             "kind": item["kind"],
             "title": item["title"][:200],
+            "author": item.get("author", "")[:200],
             "location": item.get("location"),
             "content_scope": "retrieved_passage" if verified else "discovery_excerpt",
             "document_sha256": document_sha256 or item.get("document_sha256"),
