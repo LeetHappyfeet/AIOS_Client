@@ -18,6 +18,8 @@ from .protocol import negotiate
 from .runner import Runner, agent_dir
 from .ui_settings import check_basic, validate_ui
 from .diagnostics import connection_hint, installation_info
+from .research.manage import registry_snapshot, update_source, test_source
+from .research.sources import load_sources
 
 
 class Manager:
@@ -160,8 +162,53 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
         with manager.lock:
             if manager.active():
                 raise ValueError("Stop all active agents before editing configuration")
+            check_agent_grants(data)
             store.save(data)
         return {"ok": True}
+
+    def research_registry_path():
+        return store.path.parent / "research_sources.json"
+
+    def check_agent_grants(data: dict):
+        # Agent references can never silently authorize a missing or disabled source.
+        path = research_registry_path()
+        for profile in data.get("agents", {}).values():
+            grants = profile.get("research_sources", [])
+            if grants:
+                load_sources(path, grants)
+
+    @app.get("/api/research-sources")
+    def research_sources():
+        return registry_snapshot(research_registry_path())
+
+    @app.post("/api/research-sources")
+    def save_research_source(data: dict):
+        with manager.lock:
+            if manager.active():
+                raise ValueError("Stop active agents before editing research sources")
+            grants = {
+                source_id
+                for profile in store.load()["agents"].values()
+                for source_id in profile.get("research_sources", [])
+            }
+            if set(data) == {"source", "previous_id"} or set(data) == {"source"}:
+                return update_source(
+                    research_registry_path(), source=data["source"],
+                    previous_id=data.get("previous_id") or None, granted_ids=grants,
+                )
+            if set(data) == {"delete_id"}:
+                return update_source(
+                    research_registry_path(), delete_id=data["delete_id"],
+                    granted_ids=grants,
+                )
+            raise ValueError("Expected source or delete_id")
+
+    @app.post("/api/test-research-source")
+    def probe_research_source(data: dict):
+        # Setup administrator explicitly selects this endpoint; no network scan.
+        if set(data) != {"source"}:
+            raise ValueError("Expected one research source")
+        return test_source(data["source"])
 
     @app.post("/api/privileges")
     def privileges(data: dict):
