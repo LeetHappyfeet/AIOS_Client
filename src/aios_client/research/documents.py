@@ -47,9 +47,11 @@ def html_text(data: str):
     return parser.text()
 
 
-def extract_document(data: bytes, kind: str):
+def extract_document(data: bytes, kind: str, *, max_bytes: int = MAX_DOCUMENT):
     """Return (sections, limitations), never execute embedded content."""
-    if len(data) > MAX_DOCUMENT:
+    if max_bytes > 24 * 1024 * 1024 or max_bytes < 1024 * 1024:
+        return [], ["document_limit_invalid"]
+    if len(data) > max_bytes:
         return [], ["document_too_large"]
     if kind in {".txt", ".md", ".rst", ".json", ".csv"}:
         try:
