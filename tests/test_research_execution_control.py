@@ -156,9 +156,9 @@ def test_oversized_book_fails_once_without_repeated_download(monkeypatch):
             return httpx.Response(200, headers={"content-type": "application/atom+xml"},
                                   text=FEED)
         return httpx.Response(200, headers={"content-type": "application/pdf"},
-                              content=b"x" * 20)
-    monkeypatch.setattr("aios_client.research.tools.MAX_DOCUMENT", 10)
-    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+                              content=b"x" * (1024 * 1024 + 1))
+    bounded_source = source().model_copy(update={"max_document_bytes": 1024 * 1024})
+    tool = ResearchTools(Host(), [bounded_source], httpx.MockTransport(serve))
     result = tool.research_search("glacier", "calibre")
     eid = result["results"][0]["evidence_id"]
     first = tool.research_read(eid, section_index=0)
@@ -166,7 +166,7 @@ def test_oversized_book_fails_once_without_repeated_download(monkeypatch):
     assert first["error"] == second["error"] == "response_too_large"
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
-    assert first["limit_bytes"] == 10
+    assert first["limit_bytes"] == 1024 * 1024
     assert tool.control.failed_acquisitions == 1
     assert sum("/book.pdf" in url for url in requests) == 1
 
