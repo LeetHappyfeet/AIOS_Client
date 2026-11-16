@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 from aios_client.config import ConfigStore
 from aios_client.research.manage import (
     registry_snapshot, test_source as probe_source, update_source, write_registry,
+    normalize_source_draft,
 )
 from aios_client.research.sources import load_sources
 from aios_client.server import create_app
@@ -136,3 +137,52 @@ def test_web_ui_routes_and_persisted_agent_grants(tmp_path):
         assert "granted" in response.json()["error"]
         config["agents"]["agent"]["research_sources"] = ["unknown"]
         assert client.post("/api/config", json=config, headers=headers).status_code == 400
+
+
+def test_friendly_names_and_lan_urls_from_setup_ui(tmp_path):
+    path = tmp_path / "research_sources.json"
+    calibre = update_source(path, source={
+        "id": "Calibre", "adapter": "calibre_opds",
+        "endpoint": "http://192.168.1.16/", "priority": 100,
+    })
+    assert calibre["sources"][0]["id"] == "calibre"
+    assert calibre["sources"][0]["endpoint"] == "http://192.168.1.16/opds"
+    searx = update_source(path, source={
+        "id": "SearXNG", "adapter": "searxng",
+        "endpoint": "http://192.168.1.4:8080/",
+    })
+    by_id = {s["id"]: s for s in searx["sources"]}
+    assert by_id["searxng"]["endpoint"].rstrip("/") == "http://192.168.1.4:8080"
+    assert [s.id for s in load_sources(path, ["calibre", "searxng"])] == [
+        "calibre", "searxng",
+    ]
+    assert normalize_source_draft({
+        "id": "Home Library", "adapter": "calibre_opds",
+        "endpoint": "http://192.168.1.16/opds/",
+    })["endpoint"] == "http://192.168.1.16/opds"
+
+
+def test_provider_probe_accepts_friendly_draft_and_calibre_root_url():
+    seen = []
+    def serve(req):
+        seen.append(str(req.url))
+        return httpx.Response(
+            200, headers={"Content-Type": "application/atom+xml"},
+            text='<feed xmlns="http://www.w3.org/2005/Atom"/>',
+        )
+    result = probe_source({
+        "id": "Calibre", "adapter": "calibre_opds",
+        "endpoint": "http://192.168.1.16/",
+    }, transport=httpx.MockTransport(serve))
+    assert result["ok"]
+    assert result["source_id"] == "calibre"
+    assert seen == ["http://192.168.1.16/opds"]
+
+
+def test_file_format_still_requires_canonical_ids(tmp_path):
+    path = tmp_path / "research_sources.json"
+    with pytest.raises(ValueError):
+        write_registry(path, {"version": 1, "sources": [{
+            "id": "Calibre", "adapter": "calibre_opds",
+            "endpoint": "http://192.168.1.16/",
+        }]})
