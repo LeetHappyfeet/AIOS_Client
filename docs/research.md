@@ -11,8 +11,8 @@ become hyphens. Agent source permissions always reference these canonical IDs.
 
 For Calibre OPDS, enter the Content Server base address, such as
 `http://192.168.1.16/`; the browser editor and setup API append `/opds`
-automatically. If your Calibre server serves OPDS at a different location,
-configure the actual OPDS URL directly. The network test checks whether
+automatically. The current adapter requires an endpoint ending in `/opds`;
+other OPDS paths would require an adapter change. The network test checks whether
 the resulting URL returns an Atom feed; it does **not** prove that the
 server's root page is an OPDS catalog. SearXNG accepts its base URL, for
 example `http://192.168.1.4:8080/`, and uses `/search?format=json`.
