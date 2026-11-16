@@ -6,7 +6,7 @@ import httpx
 import pytest
 
 from aios_client.activity import ActivityLog
-from aios_client.http import API, APIUnavailable
+from aios_client.http import API, APIError, APIUnavailable
 from aios_client.journal import Journal
 from aios_client.workspace import Workspace
 
@@ -218,6 +218,46 @@ def test_upgrade_tracks_preexisting_outbox_without_replaying_tools(tmp_path):
         summary = journal.delivery_summary("r")
         assert summary["discarded"] == 1 and summary["acknowledged"] == 1
         assert summary["attempts"] == 1 and summary["pending"] == 0
+    finally:
+        api.close()
+        journal.db.close()
+
+
+@pytest.mark.parametrize("remote_status", ["cancelled", "interrupted", "failed", "finished", "running"])
+def test_finish_conflict_checks_remote_terminal_status_before_unblocking_outbox(tmp_path, remote_status):
+    path = tmp_path / "journal.sqlite3"
+    journal = Journal(path)
+    journal.start("old", "Renamon", "Retained task")
+    old_path = "workspace-client/b/runs/old"
+    result = {"report": "Retained local evidence"}
+    journal.finish("old", "finished", result, old_path + "/finish", {"result": result})
+    journal.queue("next", "new", "workspace-client/b/runs/new/progress", {"summary": "next"})
+    journal.db.close()
+    journal = Journal(path)
+    requests = []
+
+    def handle(request):
+        requests.append((request.method, request.url.path))
+        if request.url.path == "/" + old_path + "/finish":
+            return httpx.Response(409, json={"detail": "Run already ended with a different result"})
+        if request.url.path == "/" + old_path:
+            return httpx.Response(200, json={"status": remote_status, "cancel_requested": True})
+        return httpx.Response(200, json={"ok": True})
+
+    api = API("http://aios", transport=httpx.MockTransport(handle))
+    try:
+        if remote_status == "running":
+            with pytest.raises(APIError):
+                journal.flush(api)
+            assert journal.delivery_summary("old")["pending"] == 1
+            assert journal.delivery_summary("new")["pending"] == 1
+        else:
+            journal.flush(api)
+            assert journal.delivery_summary("old")["rejected"] == 1
+            assert journal.delivery_summary("old")["acknowledged"] == 0
+            assert journal.delivery_summary("new")["acknowledged"] == 1
+            assert journal.status()[0]["result"] == result
+            assert requests[-1] == ("POST", "/workspace-client/b/runs/new/progress")
     finally:
         api.close()
         journal.db.close()

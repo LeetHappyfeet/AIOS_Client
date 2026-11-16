@@ -1,0 +1,230 @@
+"""Transport useful worker findings without another inference or raw tool traces."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import re
+from urllib.parse import urlsplit
+
+from pydantic import ValidationError
+
+from .tools.results import MemoryCandidate
+from .verification import bounded_text
+
+REPORT = re.compile(r"aios-experiment-[0-9a-fA-F-]{36}\.json\Z")
+
+
+def _object(text):
+    text = text.strip()
+    if text.startswith("```json\n") and text.endswith("```"):
+        text = text[8:-3].strip()
+    try:
+        value = json.loads(text)
+    except (ValueError, TypeError):
+        return None
+    if (
+        not isinstance(value, dict)
+        or value.get("outcome") not in ("completed", "partial", "blocked")
+        or not isinstance(value.get("evidence"), list)
+        or not isinstance(value.get("limitations"), list)
+    ):
+        return None
+    return value
+
+
+def stage_memory(workspace, result, report, *, nominated):
+    """Include bounded nominations in finish, separately from the readable report."""
+    final = _object(report)
+    if final is not None and "memory_candidates" in final:
+        raw = final.pop("memory_candidates")
+        clean_report = json.dumps(workspace.clean(final), ensure_ascii=False)
+        if "report" in result:
+            result["report"] = bounded_text(clean_report, 6000)
+            result["report_truncated"] = result["report"] != clean_report
+    else:
+        raw = None
+    if not nominated:
+        return
+    selected = getattr(workspace, "published_result", None)
+    if selected is not None:
+        raw = selected.get("memory_candidates")
+    if not isinstance(raw, list) or "result_summary" not in result:
+        return
+    candidates = []
+    for item in raw[:3]:
+        try:
+            note = MemoryCandidate.model_validate(workspace.clean(item))
+        except ValidationError:
+            continue
+        payload = note.model_dump(exclude_none=True, exclude={"evidence_id"})
+        if getattr(workspace.registry, "tool_mode", "workspace") == "research":
+            # The server's existing memory contract has no evidence_id field.
+            # Publish only supported, retrieved findings and never leak private
+            # library locators into a public source_url.
+            payload.pop("source_url", None)
+            if note.kind == "finding":
+                citations = (selected or {}).get("research_citations", [])
+                supported = [
+                    c for c in citations
+                    if c.get("evidence_id") == note.evidence_id
+                    and c.get("finding_index") == note.finding_index
+                    and c.get("stance") == "supports"
+                ]
+                if not supported:
+                    continue
+                url = supported[0].get("public_url")
+                if url:
+                    parts = urlsplit(url)
+                    if (parts.scheme == "https" and parts.hostname
+                            and not parts.username and not parts.password
+                            and not parts.query and not parts.fragment
+                            and len(url) <= 512):
+                        payload["source_url"] = url
+        candidates.append(payload)
+    if candidates and len(json.dumps({**result, "memory_candidates": candidates})) <= 60000:
+        result["memory_candidates"] = candidates
+
+
+def result_summary(workspace, spec, report, *, execution_failed=False):
+    """Prefer a structured final answer; bridge existing experimental JSON reports.
+
+    Only explicitly expected experimental reports are opened. Report files must
+    match the immutable-check snapshot; their statements remain worker claims.
+    Never follow artifact paths supplied by the model to collect more files.
+    """
+    selected = getattr(workspace, "published_result", None)
+    value = dict(selected) if selected is not None else _object(report)
+    source = "publish_result" if selected is not None else "final_response"
+    source_hash = None
+    if value is None:
+        manifest = workspace.artifacts / "manifest.json"
+        try:
+            entries = json.loads(manifest.read_text())["final"]["entries"]
+        except (OSError, ValueError, KeyError, TypeError):
+            entries = {}
+        for output in spec.expected_outputs:
+            if output.kind != "file" or not REPORT.fullmatch(output.path):
+                continue
+            try:
+                path = workspace.path(output.path)
+                with path.open("rb") as handle:
+                    data = handle.read(128 * 1024 + 1)
+                if len(data) > 128 * 1024:
+                    continue
+                digest = hashlib.sha256(data).hexdigest()
+                if entries.get(output.path, {}).get("sha256") != digest:
+                    continue
+                candidate = _object(data.decode("utf-8"))
+                if candidate is not None:
+                    value, source, source_hash = candidate, output.path, digest
+                    break
+            except (OSError, ValueError, UnicodeError):
+                continue
+    if value is None:
+        return None  # Legacy prose stays available; no fabricated outcome.
+
+    if execution_failed:
+        value = {
+            **value,
+            "outcome": "blocked" if value["outcome"] == "blocked" else "partial",
+            "limitations": [
+                "Execution did not finish; final host verification is unavailable",
+                *value.get("limitations", []),
+            ],
+        }
+
+    def text(value, limit):
+        return (
+            bounded_text(workspace.redact(value), limit)
+            if isinstance(value, str)
+            else ""
+        )
+
+    def items(values, count, limit):
+        if not isinstance(values, list):
+            return []
+        result = []
+        for item in values[:count]:
+            if isinstance(item, (dict, list)):
+                item = json.dumps(item, ensure_ascii=False)
+            if isinstance(item, str):
+                result.append(text(item, limit))
+        if len(values) > count:
+            result.append(
+                f"[{len(values) - count} additional entries retained in source report]"
+            )
+        return result
+
+    content = value.get("requested_content")
+    content = content if isinstance(content, list) else []
+    sections = []
+    for section in content[:4]:
+        if not isinstance(section, dict) or not isinstance(section.get("text"), str):
+            continue
+        original = workspace.redact(section["text"])
+        body = bounded_text(original, 8000)
+        item = {
+            "label": text(section.get("label"), 160),
+            "text": body,
+            "truncated": body != original or bool(section.get("source_truncated")),
+        }
+        if source == "publish_result":
+            item["source_kind"] = section.get("source_kind", "worker_text")
+            if item["source_kind"] == "workspace_file":
+                for key in ("path", "source_sha256", "start_line", "end_line"):
+                    item[key] = section[key]
+                try:
+                    manifest = json.loads(
+                        (workspace.artifacts / "manifest.json").read_text()
+                    )
+                    final = manifest["final"]["entries"].get(item["path"])
+                    item["matches_final_snapshot"] = (
+                        (final.get("sha256") == item["source_sha256"])
+                        if final is not None
+                        else None
+                    )
+                except (OSError, ValueError, KeyError, TypeError):
+                    item["matches_final_snapshot"] = None
+        sections.append(item)
+    result = {
+        "outcome": value["outcome"],
+        "summary": text(value.get("summary"), 1000),
+        "findings": items(value.get("findings", value["evidence"]), 6, 700),
+        "limitations": items(value["limitations"], 4, 500),
+        "artifacts": items(value.get("artifacts", []), 6, 400),
+        "requested_content": sections,
+        "content_sections_omitted": max(0, len(content) - 4),
+        "source": source,
+        "source_sha256": source_hash,
+    }
+    # Citations are source-retrieval receipts, not proof that claims are true.
+    # Never infer citations from worker prose or from arbitrary returned URLs.
+    if source == "publish_result":
+        citations = value.get("research_citations", [])
+        if isinstance(citations, list) and citations:
+            result["research_citations"] = [
+                c for c in citations[:12] if isinstance(c, dict)
+                and isinstance(c.get("finding_index"), int)
+                and 0 <= c["finding_index"] < len(result["findings"])
+            ]
+    # Preserve explicit omissions under the encoded transport budget, including
+    # non-ASCII text. Never silently ship a prefix of invalid JSON.
+    result["transport_truncated"] = False
+    while len(json.dumps(result)) > 18000:
+        result["transport_truncated"] = True
+        if result.get("research_citations"):
+            result["research_citations"].pop()
+        elif result["requested_content"]:
+            section = result["requested_content"][-1]
+            if len(section["text"]) > 256:
+                section["text"] = section["text"][: len(section["text"]) // 2]
+                section["truncated"] = True
+            else:
+                result["requested_content"].pop()
+                result["content_sections_omitted"] += 1
+        elif result["findings"]:
+            result["findings"].pop()
+        else:
+            break
+    return result

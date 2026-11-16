@@ -42,13 +42,18 @@ class RepositoryInstructions:
                 "Repository instruction budget exceeded; narrow the assignment"
             )
 
-    def for_tool(self, arguments):
+    def for_tool(self, arguments, tool_name=None):
         if not isinstance(arguments, dict):
+            return
+        if tool_name == "inspect_path":
+            leaf = self.workspace.filesystem._lexical_path(arguments.get("path", "."))
+            parent = leaf.parent if leaf != self.workspace.root else leaf
+            self.inspect(parent.relative_to(self.workspace.root).as_posix())
             return
         for key in ("path", "cwd", "destination"):
             if isinstance(arguments.get(key), str) and arguments[key]:
                 self.inspect(arguments[key])
-        for key in ("edits", "reads"):
+        for key in ("edits", "reads", "files"):
             for item in (
                 arguments.get(key, []) if isinstance(arguments.get(key), list) else []
             ):
@@ -57,12 +62,20 @@ class RepositoryInstructions:
 
 
 class WorkingContext:
-    def __init__(self, system, assignment, budget, instructions, clean=lambda x: x):
+    recent_history_chars = 16000
+    recent_exchanges = 3
+
+    def __init__(
+        self, system, assignment, budget, instructions, clean=lambda x: x, *,
+        worker_brief=None, retain_result=None,
+    ):
         self.system, self.assignment = system, assignment
         self.budget, self.instructions, self.clean = budget, instructions, clean
         self.history, self.ledger, self.errors = [], [], []
         self.compacted = 0
         self.state = {}
+        self.worker_brief = self.clean(worker_brief)
+        self.retain_result = retain_result
 
     def append(self, message):
         self.history.append(self.clean(message))
@@ -72,13 +85,18 @@ class WorkingContext:
             {"role": "system", "content": self.system},
             {"role": "user", "content": json.dumps(self.assignment)},
         ]
+        if self.worker_brief:
+            messages.append({"role": "user", "content": self.worker_brief})
         state = {
             "host_state": self.state,
             "repository_instructions": self.instructions.loaded,
             "compacted_exchanges": self.compacted,
             "recent_execution_receipts": self.ledger,
             "retained_errors": self.errors,
-            "history_location": "Local journal contains full redacted observations; use file/process/artifact tools to re-inspect.",
+            "history_location": (
+                "The local journal retains redacted observations. Use read_artifact with "
+                "result_artifact_id to recover a compacted tool result."
+            ),
         }
         messages.append(
             {
@@ -91,7 +109,14 @@ class WorkingContext:
         return messages + self.history
 
     def prepare(self):
-        while len(json.dumps(self._messages())) > self.budget:
+        while True:
+            messages = self._messages()
+            if len(json.dumps(messages)) <= self.budget:
+                if (
+                    len(json.dumps(self.history)) <= self.recent_history_chars
+                    or sum(m["role"] == "assistant" for m in self.history) <= self.recent_exchanges
+                ):
+                    return messages
             if not self.history:
                 raise ContextBudget(
                     "Pinned assignment, guidance and retained execution state exceed the context budget"
@@ -134,6 +159,11 @@ class WorkingContext:
                             "process_id",
                             "cursor",
                             "artifact_id",
+                            "evidence_id",
+                            "source_id",
+                            "run_id",
+                            "section",
+                            "revision",
                         )
                     },
                     "result": {
@@ -146,12 +176,19 @@ class WorkingContext:
                             "next_cursor",
                             "remaining",
                             "wait_reason",
+                            "next_line",
+                            "staged",
+                            "delivery",
                             "artifact_id",
                             "sha256",
                             "edited",
                             "status",
                             "timed_out",
                             "cancelled",
+                            "revision",
+                            "execution_status",
+                            "evidence_source",
+                            "not_goal_completion",
                         )
                         if k in result
                     },
@@ -166,6 +203,8 @@ class WorkingContext:
                     receipt["command_excerpt"] = str(
                         args.get("command") or args.get("argv")
                     )[:200]
+                if self.retain_result is not None:
+                    receipt["result_artifact_id"] = self.retain_result(result)
                 self.ledger.append(receipt)
                 if (
                     result.get("ok") is False
@@ -176,7 +215,6 @@ class WorkingContext:
             self.ledger = self.ledger[-24:]
             self.history = self.history[end:]
             self.compacted += 1
-        return self._messages()
 
     def snapshot(self):
         return self.clean(

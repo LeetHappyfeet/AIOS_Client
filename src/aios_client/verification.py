@@ -144,7 +144,7 @@ def verify(workspace, spec, baseline, stop_event, deadline):
     violations = [
         c["path"]
         for c in changes
-        if any(
+        if workspace.registry.read_only or any(
             protected == "."
             or c["path"].rstrip("/") == protected
             or c["path"].startswith(protected.rstrip("/") + "/")

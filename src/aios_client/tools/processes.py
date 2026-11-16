@@ -18,6 +18,7 @@ from .platforms import ProcessBackend
 
 class ProcessTools:
     def __init__(self, workspace, on_event=lambda *args: None, backend=None):
+        self.privileges = workspace.privileges
         self.path, self.artifacts = workspace.path, workspace.artifacts
         self.secrets, self.clean, self.redact = (
             workspace.secrets,
@@ -39,15 +40,19 @@ class ProcessTools:
         ] = "default",
         stdin: bool = False,
         timeout_seconds: Annotated[float, Field(gt=0, le=1800)] | None = None,
+        elevated: bool = False,
     ):
         with self.process_lock:
             if self.cancelled.is_set():
                 raise RuntimeError("Workspace stopped")
+            if elevated:
+                argv = self.privileges.elevated_argv(command, argv, shell)
+                command, shell = None, "default"
             return self._start_command(
-                command, cwd, argv, shell, stdin, timeout_seconds
+                command, cwd, argv, shell, stdin, timeout_seconds, elevated
             )
 
-    def _start_command(self, command, cwd, argv, shell, stdin, timeout_seconds):
+    def _start_command(self, command, cwd, argv, shell, stdin, timeout_seconds, elevated=False):
         if command is not None and (not command or len(command) > 8000):
             raise ValueError("Invalid command length")
         if argv is not None and len(json.dumps(argv)) > 16000:
@@ -79,6 +84,7 @@ class ProcessTools:
             "resolved_cwd": str(resolved_cwd),
             "started_at": time.time(),
             "ended_at": None,
+            "elevated": elevated,
             "stdin_enabled": stdin,
             "input_queue": queue.Queue(maxsize=16),
             "input_closed": not stdin,
@@ -97,6 +103,7 @@ class ProcessTools:
                         "shell": shell,
                         "cwd": cwd,
                         "resolved_cwd": str(resolved_cwd),
+                        "elevated": elevated,
                         "stdin": stdin,
                         "artifact_id": log.name,
                         "started_at": record["started_at"],
@@ -237,6 +244,7 @@ class ProcessTools:
             "process_id": pid,
             "artifact_id": log.name,
             "status": "started",
+            "elevated": elevated,
             "os_pid": p.pid,
             "shell": shell,
             "stdin_enabled": stdin,
@@ -272,10 +280,13 @@ class ProcessTools:
         self,
         process_id: str,
         cursor: Annotated[int, Field(ge=0)] = 0,
-        wait_seconds: Annotated[float, Field(ge=0, le=30)] = 10,
+        wait_seconds: Annotated[float | None, Field(ge=0, le=30)] = None,
+        until_complete: bool = False,
     ):
         record = self.processes[process_id]
         # The session caps command_timeout to its remaining assignment wall time.
+        if wait_seconds is None:
+            wait_seconds = 120 if until_complete else 10
         deadline = time.monotonic() + min(wait_seconds, self.command_timeout)
         reason = "wait_timeout"
         with record["changed"]:
@@ -283,8 +294,11 @@ class ProcessTools:
                 if self.cancelled.is_set():
                     reason = "workspace_stopped"
                     break
-                size = record["log"].stat().st_size if record["log"].exists() else 0
-                if size > cursor:
+                if (
+                    not until_complete
+                    and record["log"].exists()
+                    and record["log"].stat().st_size > cursor
+                ):
                     reason = "output"
                     break
                 if record["done"].is_set():
@@ -380,9 +394,9 @@ class ProcessTools:
 
 def register(registry, processes):
     for name, description in {
-        "run_command": "Start a workspace command or argv process. Select an available shell; follow its process handle",
+        "run_command": "Start a command or argv process; elevated=true requests noninteractive sudo when administration is enabled. Follow its process handle",
         "read_process": "Read bounded UTF-8 output by byte cursor, exit status, cancellation and input status",
-        "wait_process": "Wait up to 30 seconds for output or completion, then read from cursor; wait timeout is not command failure",
+        "wait_process": "Read from cursor after output or completion (default 10 seconds). For noninteractive commands, set until_complete=true and omit wait_seconds to wait up to 120 seconds within the assignment deadline. Explicit wait_seconds is capped at 30. Reuse next_cursor for subsequent reads. A wait timeout does not end the process.",
         "write_process": "Queue bounded UTF-8 stdin; optionally close stdin. Queued does not mean delivered",
         "stop_process": "Stop an owned process and its child group",
         "process_status": "List owned process handles and observed lifecycle states",

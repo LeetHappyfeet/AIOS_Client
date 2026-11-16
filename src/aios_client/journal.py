@@ -4,9 +4,32 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from .http import APIError
+
+
+def _expired_unfinished_run(remote):
+    """True only for a server-confirmed running run with a safely expired lease.
+
+    This does not authorize a new run or mark any report delivered. A subsequent
+    normal workspace claim is responsible for the server's authoritative
+    expiration transition. Ambiguous responses continue to fail closed.
+    """
+    if not isinstance(remote, dict) or remote.get("status") != "running":
+        return False
+    raw = remote.get("lease_expires_at")
+    if not isinstance(raw, str):
+        return False
+    try:
+        expires = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expires.tzinfo is None:
+        return False
+    # Leave slack for server/client clock skew and a just-expired lease.
+    return expires <= datetime.now(timezone.utc) - timedelta(seconds=60)
 
 
 class Journal:
@@ -15,6 +38,7 @@ class Journal:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.lock = threading.RLock()
         self.delivery_lock = threading.Lock()
+        self._deferred_reports = set()  # log once per pending report per listener lifetime
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, agent TEXT, status TEXT, task TEXT,
@@ -210,22 +234,39 @@ class Journal:
                     self.db.execute(
                         "UPDATE deliveries SET failures=failures+1 WHERE id=?", (key,)
                     )
-                if exc.status != 409 or not path.endswith(("/observe", "/progress")):
+                is_finish = path.endswith("/finish")
+                if exc.status != 409 or not path.endswith(("/observe", "/progress", "/finish")):
                     raise
                 status_path = path.rsplit("/", 1)[0].replace(
                     "workspace-client/v3/", "workspace-client/"
                 )
-                state = api.request("GET", status_path)
-                if not state.get("cancel_requested") and state.get("status") not in {
+                remote = api.request("GET", status_path)
+                terminal = remote.get("status") in {
                     "cancelled",
                     "interrupted",
                     "failed",
                     "finished",
-                }:
+                }
+                if not terminal and (is_finish or not remote.get("cancel_requested")):
+                    if _expired_unfinished_run(remote):
+                        # Normal claims on AIOS atomically interrupt expired runs.
+                        # Do not let the stale progress notification prevent that
+                        # claim. Leave BOTH notifications durable for a later flush,
+                        # after AIOS confirms a terminal state.
+                        if key not in self._deferred_reports:
+                            self.event(run, "delivery_deferred", {
+                                "path": path, "reason": "remote_run_lease_expired",
+                                "remote_status": remote["status"],
+                            })
+                            self._deferred_reports.add(key)
+                        continue
                     raise
-                self.event(
-                    run, "report_rejected", {"path": path, "reason": "Run stopped"}
+                reason = (
+                    f"AIOS already closed the run as {remote['status']}"
+                    if is_finish
+                    else "Run stopped"
                 )
+                self.event(run, "report_rejected", {"path": path, "reason": reason})
                 state = "rejected"
             except Exception:
                 with self.lock, self.db:
@@ -238,6 +279,7 @@ class Journal:
                     "UPDATE deliveries SET state=? WHERE id=?", (state, key)
                 )
                 self.db.execute("DELETE FROM outbox WHERE id=?", (key,))
+            self._deferred_reports.discard(key)
 
     def claims(self):
         with self.lock:

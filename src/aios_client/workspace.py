@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import threading
 from pathlib import Path
 from typing import Annotated
@@ -10,8 +11,10 @@ from uuid import uuid4
 
 from pydantic import Field
 
-from .tools import files, git, processes
+from .tools import files, git, inspection, network, output, processes, results
 from .tools.registry import Registry
+from .research.tools import ResearchTools, register as register_research
+from .tools.privileges import Privileges
 
 EXCLUDED = files.EXCLUDED
 
@@ -25,7 +28,17 @@ class Workspace:
         command_timeout=120,
         on_event=lambda *args: None,
         process_backend=None,
+        http_origins=(),
+        http_transport=None,
+        administration_enabled=False,
+        research_sources=(),
+        research_transport=None,
+        research_index_path=None,
+        research_evidence_path=None,
+        research_run_id=None,
+        tool_mode="workspace",
     ):
+        self.privileges = Privileges(administration_enabled)
         self.root = Path(root).expanduser().resolve(strict=True)
         if not self.root.is_dir():
             raise ValueError("Workspace must be an existing directory")
@@ -39,10 +52,33 @@ class Workspace:
         )
         self.process_manager.command_timeout = command_timeout
         self.git = git.GitTools(self)
+        self.output_tools = output.OutputTools(self)
+        self.http_tools = network.HTTPTools(self, http_origins, http_transport)
+        self.published_result = None
+        self.partial_findings = []
+        self.model_diagnostics = {}
+        self.result_tools = results.ResultTools(self)
         self.registry = Registry(self.guard, self.bound_result)
+        if tool_mode not in {"workspace", "research"}:
+            raise ValueError("Unknown agent tool mode")
+        self.registry.tool_mode = tool_mode
+        self.research_tools = ResearchTools(self, research_sources, research_transport, research_index_path,
+                                            research_evidence_path, research_run_id)
         files.register(self.registry, self.filesystem)
         processes.register(self.registry, self.process_manager)
         git.register(self.registry, self.git)
+        output.register(self.registry, self.output_tools)
+        network.register(self.registry, self.http_tools)
+        register_research(self.registry, self.research_tools)
+        results.register(self.registry, self.result_tools)
+        self.registry.add(
+            "inspect_environment", self.inspect_environment,
+            "Inspect workspace, OS/kernel, identity, tool paths and disk space without shell commands, sudo probes or test files",
+            "host.inspect",
+        )
+        self.registry.add("inspect_privileges", self.privileges.inspect,
+                          "Check effective root identity and, when administration is enabled, fixed noninteractive sudo id probe",
+                          "host.inspect")
         self.registry.add(
             "host_info",
             self.host_info,
@@ -110,17 +146,36 @@ class Workspace:
             return [self.clean(v) for v in value]
         return value
 
+    def retain_tool_result(self, result):
+        return self._write_result_artifact(json.dumps(self.clean(result), ensure_ascii=True))
+
+    def _write_result_artifact(self, encoded):
+        artifact = str(uuid4()) + ".json"
+        (self.artifacts / artifact).write_text(encoded, encoding="utf-8")
+        return artifact
+
     def bound_result(self, result):
         encoded = json.dumps(self.clean(result), ensure_ascii=True)
         if len(encoded) > 22000:
-            artifact = str(uuid4()) + ".json"
-            (self.artifacts / artifact).write_text(encoded, encoding="utf-8")
+            artifact = self._write_result_artifact(encoded)
             metadata = {
                 k: result[k]
                 for k in (
                     "status",
                     "knowledge_revision",
                     "next_cursor",
+                    "next_line",
+                    "search_complete",
+                    "process_id",
+                    "exit_code",
+                    "output_complete",
+                    "capture_truncated",
+                    "scan_truncated",
+                    "timed_out",
+                    "cancelled",
+                    "counts_complete",
+                    "status_code",
+                    "http_success",
                     "limit_reason",
                     "scanned",
                     "skipped",
@@ -146,12 +201,21 @@ class Workspace:
     def host_info(self):
         return {
             **self.process_manager.backend.capabilities(),
+            "privilege_escalation": self.privileges.enabled and os.name == "posix",
+            "privileges": self.privileges.status(),
             "workspace": str(self.root),
             "tool_capabilities": sorted(
-                {t.capability for t in self.registry.tools.values()}
+                {t.capability for t in self.registry.tools.values() if self.registry.permitted(t)}
             ),
             "tool_protocol": 1,
+            "http_origins": sorted(self.http_tools.origins),
+            "read_only_inspection": self.registry.read_only,
+            "tool_mode": self.registry.tool_mode,
+            "research_sources": sorted(self.research_tools.sources),
         }
+
+    def inspect_environment(self):
+        return inspection.inspect_environment(self.root)
 
     def read_artifact(
         self,

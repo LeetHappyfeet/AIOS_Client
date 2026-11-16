@@ -212,13 +212,40 @@ class ConfigStore:
                 raise ValueError("Configure only the worker credential in the client")
         for p in data["endpoints"].values():
             base_url(p["base_url"])
+            if type(p.get("max_tokens", 4096)) is not int or not 128 <= p.get("max_tokens", 4096) <= 32768:
+                raise ValueError("Endpoint max_tokens must be an integer from 128 to 32768")
             if not 1 <= int(p.get("concurrency", 1)) <= 16:
                 raise ValueError("Endpoint concurrency must be 1–16")
             if not 1 <= float(p.get("timeout", 120)) <= 1800:
                 raise ValueError("Endpoint timeout must be 1–1800 seconds")
         for p in data["agents"].values():
+            from .tools.network import canonical_origin
+            from .research.sources import SOURCE_ID
+
+            if p.get("tool_mode", "workspace") not in ("workspace", "research"):
+                raise ValueError("tool_mode must be workspace or research")
+            grants = p.get("research_sources", [])
+            if type(grants) is not list or len(grants) > 30 or any(
+                type(x) is not str or not SOURCE_ID.fullmatch(x) for x in grants
+            ) or len(grants) != len(set(grants)):
+                raise ValueError("research_sources must be a list of unique source IDs")
+
+            if type(p.get("administration_enabled", False)) is not bool:
+                raise ValueError("administration_enabled must be a boolean")
+            origins = p.get("http_origins", [])
+            if type(origins) is not list or len(origins) > 20 or any(type(x) is not str for x in origins):
+                raise ValueError("http_origins must be a list of at most 20 HTTP(S) origins")
+            for origin in origins:
+                canonical_origin(origin, origin_only=True)
             if p.get("protocol_version", "auto") not in ("auto", 2, 3):
                 raise ValueError("protocol_version must be auto, 2, or 3")
+            routing = p.get('routing_mode', 'manual')
+            if routing not in ('manual', 'automatic'):
+                raise ValueError('routing_mode must be manual or automatic')
+            if routing == 'automatic' and (p.get('link_id') or p.get('origin_instance_id') or p.get('share_memory')):
+                raise ValueError('Automatic routing does not use manual links or memory sharing')
+            if routing == 'automatic' and p.get('protocol_version') == 2:
+                raise ValueError('Automatic routing requires protocol v3')
             for field in ("origin_instance_id", "link_id"):
                 if p.get(field):
                     UUID(p[field])
@@ -228,10 +255,6 @@ class ConfigStore:
                 )
             if p.get("link_id") and p.get("protocol_version") == 2:
                 raise ValueError("Environment links require protocol v3")
-            if p.get("origin_instance_id") == p.get("instance_id"):
-                raise ValueError(
-                    "Use a dedicated execution instance, separate from the origin"
-                )
             if type(p.get("share_memory", False)) is not bool:
                 raise ValueError("share_memory must be a boolean")
             if p.get("share_memory") and not p.get("link_id"):
@@ -241,8 +264,9 @@ class ConfigStore:
             for field, group in (("aios", "aios"), ("endpoint", "endpoints")):
                 if p.get(field) not in data[group]:
                     raise ValueError(f"Unknown {field} profile")
-            for field in ("instance_id", "session_id"):
-                UUID(p[field])
+            if routing == 'manual':
+                for field in ("instance_id", "session_id"):
+                    UUID(p[field])
             for field in (
                 "username",
                 "character_id",

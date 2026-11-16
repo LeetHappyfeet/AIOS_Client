@@ -41,7 +41,7 @@ async function invoke(code) { await vm.runInContext(code, context); }
     aName: 'AIOS', aHost: '192.0.2.1', aPort: '8000', aScheme: 'http',
     aStorage: 'file', aKey: 'workspace-fixture-key',
     eName: 'DeepSeek', eURL: 'https://model.example/v1', eModel: 'fixture-model',
-    eTimeout: '120', eStorage: 'file', eKey: 'provider-fixture-key',
+    eTimeout: '120', eMaxTokens: '8192', eStorage: 'file', eKey: 'provider-fixture-key',
   })) element(id).value = value;
   await invoke('saveAIOS()');
   await invoke('saveEndpoint()');
@@ -51,6 +51,7 @@ async function invoke(code) { await vm.runInContext(code, context); }
   assert.equal(element('eKey').value, '');
   assert.equal(element('aSaved').value, 'AIOS');
   assert.equal(element('eSaved').value, 'DeepSeek');
+  assert.equal(vm.runInContext('config.endpoints.DeepSeek.max_tokens', context), 8192);
   for (const call of calls.filter(c => c.route === 'config')) {
     assert.ok(!JSON.stringify(call.body).includes('fixture-key'));
   }
@@ -76,5 +77,55 @@ async function invoke(code) { await vm.runInContext(code, context); }
   await invoke("credential('e')");
   assert.equal(element('eKey').value, '');
   assert.equal(calls.at(-1).route, 'config');
-  console.log('Setup credential UI checks passed');
+  element('gName').value = 'worker';
+  element('gRouting').value = 'automatic';
+  element('gUser').value = 'human';
+  element('gScope').value = 'conversation';
+  element('gAdmin').value = 'true';
+  element('gHTTP').value = 'http://127.0.0.1:8080\n  https://app.example  \n';
+  await invoke('saveAgent()');
+  const savedAgent = calls.filter(c => c.route === 'config').at(-1).body.agents.worker;
+  assert.equal(savedAgent.routing_mode, 'automatic');
+  assert.equal(savedAgent.administration_enabled, true);
+  assert.equal(savedAgent.link_id, '');
+  assert.equal(element('gSaved').value, 'worker');
+  assert.deepEqual(Array.from(savedAgent.http_origins), ['http://127.0.0.1:8080', 'https://app.example']);
+  element('gSaved').value = 'worker';
+  element('gAdmin').value = 'false';
+  element('gHTTP').value = '';
+  await invoke("$('gSaved').onchange()");
+  assert.equal(element('gHTTP').value, 'http://127.0.0.1:8080\nhttps://app.example');
+  assert.equal(element('gAdmin').value, 'true');
+  await invoke('checkPrivileges()');
+  assert.equal(calls.at(-1).route, 'privileges');
+  assert.equal(calls.at(-1).body.agent, 'worker');
+  assert.equal(element('manualRouting').hidden, true);
+  element('gRouting').value = 'manual';
+  await invoke('routingVisibility()');
+  assert.equal(element('manualRouting').hidden, false);
+  element('events').textContent = '[{"kind":"tool_result"}]\n';
+  let copiedText;
+  context.navigator = {clipboard: {async writeText(text) { copiedText = text; }}};
+  await invoke("copyLog('events')");
+  assert.equal(copiedText, element('events').textContent);
+
+  context.navigator = {};
+  let selectedNode;
+  let selection;
+  context.document.createRange = () => ({
+    selectNodeContents(node) { selectedNode = node; },
+  });
+  context.window = {getSelection: () => ({
+    removeAllRanges() { selection = null; },
+    addRange(range) { selection = range; },
+  })};
+  context.document.execCommand = action => {
+    assert.equal(action, 'copy');
+    return false;
+  };
+  await invoke("copyLog('events')");
+  assert.equal(selectedNode, element('events'));
+  assert.ok(selection);
+  assert.match(element('copyStatus').textContent, /Ctrl\+C/);
+  console.log('Setup credential and HTTP policy UI checks passed');
 })().catch(error => { console.error(error); process.exitCode = 1; });
