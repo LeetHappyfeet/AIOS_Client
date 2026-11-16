@@ -6,6 +6,7 @@ import json
 import time
 
 from ..tools.registry import ToolArguments
+from ..research.synthesis import compact_synthesis_messages, merge_research_report
 from .context import RepositoryInstructions, WorkingContext
 from .tasks import TaskBlocked, TaskTools
 
@@ -108,7 +109,12 @@ class AgentSession:
         """Produce an auditable outcome, never invented geological findings."""
         control = self.workspace.research_tools.control
         items = []
+        seen_sections = set()
         for reference in control.verified_passages[-12:]:
+            key = (reference.get("evidence_id"), reference.get("section"))
+            if key in seen_sections:
+                continue
+            seen_sections.add(key)
             item = self.workspace.research_tools.evidence.get(reference["evidence_id"], {})
             public = item.get("public", {})
             items.append({
@@ -129,6 +135,7 @@ class AgentSession:
                             "Retrieved sources are not independent proof of any claim."],
             "artifacts": [], "requested_content": [],
             "research_progress": control.snapshot(),
+            "search_log": list(getattr(self.workspace.research_tools, "search_audit", [])),
         }
         self.record("research_partial_report", {"reason": reason,
                     "evidence_count": len(items), "outcome": outcome})
@@ -192,18 +199,16 @@ class AgentSession:
                               or budget.failed_acquisitions >= budget.max_failed_acquisitions)
                 if finalizing:
                     self.context.state["research_phase"] = "report"
-                    self.context.append({"role": "user", "content":
-                        "RESEARCH PHASE ENDED. Do not call more tools. Return final JSON NOW "
-                        "with outcome, summary, evidence, limitations, artifacts, requested_content. "
-                        "Use only observed evidence receipts; do not invent findings. "
-                        "If evidence is insufficient, report partial or blocked."})
+                    # Reporting uses a compact, independently built evidence brief.
+                    # Do not append recurring giant synthesis instructions to history.
                 else:
                     self.context.state["research_phase"] = (
                         "evaluate_candidate" if unread and budget.searches >= 2 else "collect"
                     )
             else:
                 finalizing = False
-            messages = self.context.prepare()
+            messages = (compact_synthesis_messages(self.spec, self.workspace.research_tools)
+                        if research and finalizing else self.context.prepare())
             tools = [] if finalizing else self.registry.catalog()
             if research and self.context.state.get("research_phase") == "evaluate_candidate":
                 # A credible unread book already exists. Preserve model steps
@@ -243,7 +248,8 @@ class AgentSession:
             raw = json.dumps(self.workspace.clean({k: response.get(k) for k in ("content", "tool_calls")}), ensure_ascii=True)
             self.record("model_response", {
                 "step": step + 1, **diagnostics, "request_size": request_size,
-                "message_excerpt": raw[:16000], "message_truncated": len(raw) > 16000,
+                "message_excerpt": raw[:(2000 if finalizing else 16000)],
+                "message_truncated": len(raw) > (2000 if finalizing else 16000),
             })
             if finalizing and response.get("tool_calls"):
                 # Do not execute new tool calls in the reserved synthesis phase.
@@ -255,9 +261,9 @@ class AgentSession:
             if diagnostics.get("finish_reason") == "length":
                 if finalizing:
                     self.record("research_final_truncated", {"step": step + 1})
-                    if step == step_limit - 1:
-                        return self.research_fallback("Model output was truncated during reporting")
-                    continue
+                    # One bounded synthesis attempt is enough: repeating the same
+                    # 4096-token truncation wastes the remaining inference budget.
+                    return self.research_fallback("Model output was truncated during reporting")
                 self.recover_response("Provider response reached its output token limit (finish_reason=length)")
                 continue
             if diagnostics.get("finish_reason") == "content_filter":
@@ -328,6 +334,9 @@ class AgentSession:
                     )
                     continue
                 self.checkpoint()
+                if research:
+                    return merge_research_report(
+                        self.spec, self.workspace.research_tools, assistant["content"])
                 return assistant["content"]
             for call in calls:
                 self.check()
