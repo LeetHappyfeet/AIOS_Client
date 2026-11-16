@@ -428,6 +428,9 @@ class ResearchTools:
             raise ValueError("Unsupported research evidence type")
         content = self.workspace.redact(content)
         part = content[cursor:cursor + limit]
+        if not part.strip():
+            return {"evidence": item, "error": "empty_passage", "section": section,
+                    "note": "No non-whitespace source text was retrieved at this cursor."}
         next_cursor = cursor + len(part) if cursor + len(part) < len(content) else None
         entry["read"] = {"section": section, "document_sha256": document_hash}
         self.receipts.save(item, verified=True, section=section,
