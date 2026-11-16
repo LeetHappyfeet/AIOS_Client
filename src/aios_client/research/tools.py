@@ -372,7 +372,8 @@ class ResearchTools:
             if canonical_origin(acquisition["url"]) != canonical_origin(source.endpoint):
                 return {"evidence": item, "error": "acquisition_origin_rejected"}
             acquisition_key = acquisition["url"]
-            if acquisition_key not in self.document_cache:
+            was_cached = acquisition_key in self.document_cache
+            if not was_cached:
                 if not self.control.allowed("acquisition"):
                     return {"evidence": item, "error": "research_acquisition_limit",
                             "research_progress": self.control.snapshot()}
@@ -396,7 +397,9 @@ class ResearchTools:
             if document.get("error"):
                 return {"evidence": item, "error": document["error"],
                         "limitations": document.get("limitations", []),
-                        "cache_hit": acquisition_key in self.document_cache}
+                        "cache_hit": was_cached,
+                        **({"limit_bytes": MAX_DOCUMENT}
+                           if document["error"] == "response_too_large" else {})}
             sections = document["sections"]
             limitations = document["limitations"]
             if section_index is None:
@@ -421,6 +424,7 @@ class ResearchTools:
                            document_sha256=document_hash)
         response = {"evidence": item, "full_document_retrieved": True,
                 "passage_retrieved": True, "section": section,
+                "download_cache_hit": was_cached if kind == "calibre_book" else False,
                 "section_count": section_count if kind == "calibre_book" else None,
                 "document_sha256": document_hash,
                 "text": part, "next_cursor": next_cursor,
