@@ -21,6 +21,27 @@ MAX_REGISTRY_BYTES = 65536
 MAX_TEST_BYTES = 65536
 
 
+def normalize_source_draft(raw: dict) -> dict:
+    """Normalize operator-entered UI/API drafts without relaxing saved-file validation.
+
+    Source IDs are stable ACL keys, so normalization is only performed at the
+    configuration boundary. Headless JSON remains strict and fully validated.
+    """
+    if not isinstance(raw, dict):
+        raise ValueError("Research source must be an object")
+    item = dict(raw)
+    label = item.get("id")
+    if isinstance(label, str):
+        # Friendly names such as "Calibre" or "Home Search" become stable IDs.
+        item["id"] = "-".join(label.strip().lower().split())
+    if item.get("adapter") == "calibre_opds" and isinstance(item.get("endpoint"), str):
+        endpoint = item["endpoint"].strip().rstrip("/")
+        if endpoint and not endpoint.lower().endswith("/opds"):
+            endpoint += "/opds"
+        item["endpoint"] = endpoint
+    return item
+
+
 def _read(path: Path) -> SourceFile:
     if path.is_symlink():
         raise ValueError("Research source registry cannot be a symlink")
@@ -88,7 +109,7 @@ def update_source(path: Path, *, source: dict | None = None,
         registry = registry_snapshot(path)
         by_id = {item["id"]: item for item in registry["sources"]}
         if source is not None:
-            parsed = ResearchSource.model_validate(source).model_dump(mode="json")
+            parsed = ResearchSource.model_validate(normalize_source_draft(source)).model_dump(mode="json")
             if previous_id and previous_id != parsed["id"]:
                 if parsed["id"] in by_id:
                     raise ValueError("Another research source already uses that ID")
@@ -114,7 +135,7 @@ def update_source(path: Path, *, source: dict | None = None,
 
 def test_source(raw: dict, *, transport=None) -> dict:
     """Bounded, read-only provider probe. Never fetches results from search hits."""
-    source = ResearchSource.model_validate(raw)
+    source = ResearchSource.model_validate(normalize_source_draft(raw))
     if not source.enabled:
         return {"ok": False, "source_id": source.id, "reason": "source_disabled"}
     if source.adapter not in {"searxng", "calibre_opds"}:
