@@ -49,6 +49,8 @@ def test_search_dedup_and_calibre_acquisition_cache(monkeypatch):
     first = tool.research_search("glacier", "calibre")
     assert first["status"] == "ok"
     assert first["search_mode"] == "full_text"
+    assert first["results"][0]["readable"] is True
+    assert "application/pdf" in first["results"][0]["available_formats"]
     repeated = tool.research_search("  GLACIER  ", "calibre", limit=10)
     assert repeated["cache_hit"] is True
     assert tool.control.searches == 1
@@ -78,6 +80,8 @@ def test_search_http_failure_is_not_an_empty_catalog():
     result = tool.research_search("glacier", "calibre")
     assert result["status"] == "source_error"
     assert result["errors"] == {"calibre": "http_status_403"}
+    assert result["error_details"]["calibre"]["full_text_error"] == "http_status_403"
+    assert result["error_details"]["calibre"]["final_search_error"] == "http_status_403"
     assert tool.research_search("GLACIER", "calibre")["cache_hit"] is True
 
 
