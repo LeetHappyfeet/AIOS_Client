@@ -44,6 +44,12 @@ RESEARCH EVIDENCE DISCIPLINE:
 Use research_sources to discover allowed sources and research_search to find candidates.
 Search snippets are discovery hints, not verified source passages. Use research_read
 before citing; research_evidence confirms the retrieval receipt.
+When research_search returns read_recommended, open that evidence_id with
+research_read before further searching; a title is not a finding.
+When search reports source_unhealthy, avoid repeated compound expressions;
+try a short keyword if budget permits, or report the connection limitation.
+A catalogue hit with readable=false has no supported PDF/EPUB acquisition;
+do not call it a successfully read book.
 Use publish_result with research_citations linking finding_index to a retrieved
 evidence_id and stance (supports or contradicts). A citation proves source text
 was retrieved, not that a claim is true. Distinguish disagreement and uncertainty.
