@@ -202,6 +202,11 @@ class AgentSession:
                 finalizing = False
             messages = self.context.prepare()
             tools = [] if finalizing else self.registry.catalog()
+            if research and self.context.state.get("research_phase") == "evaluate_candidate":
+                # A credible unread book already exists. Preserve model steps
+                # for evidence acquisition rather than another search batch.
+                tools = [tool for tool in tools
+                         if tool.get("function", {}).get("name") != "research_search"]
             request_size = {
                 "messages_json_chars": len(json.dumps(messages)),
                 "history_json_chars": len(json.dumps(self.context.history)),
