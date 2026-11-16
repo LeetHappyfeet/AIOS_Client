@@ -155,8 +155,17 @@ def test_source(raw: dict, *, transport=None) -> dict:
             }) as response:
                 status = response.status_code
                 if status != 200:
-                    return {"ok": False, "source_id": source.id, "status_code": status,
-                            "reason": "http_status"}
+                    result = {"ok": False, "source_id": source.id,
+                              "status_code": status, "reason": "http_status"}
+                    if source.adapter == "searxng" and status == 403:
+                        result["hint"] = (
+                            "SearXNG rejected the JSON search request (HTTP 403). "
+                            "Its JSON output format may be disabled. In SearXNG "
+                            "settings.yml, enable search.formats: [html, json] and "
+                            "restart SearXNG. If JSON is already enabled, check "
+                            "SearXNG limiter or reverse-proxy access rules."
+                        )
+                    return result
                 if response.headers.get("content-encoding", "identity").lower() != "identity":
                     return {"ok": False, "source_id": source.id, "reason": "encoded_response"}
                 content = bytearray()
