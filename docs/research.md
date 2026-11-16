@@ -418,3 +418,24 @@ A new live Calibre trial should compare query statuses, whether a retrievable
 book is actually opened, verified passage counts, and both the final report's
 outcome and immutable output/check results. A valid *partial* report may pass
 the structural file check without constituting research success.
+
+
+## Research context and provenance hardening
+
+The research controller keeps a short list of candidate titles/evidence IDs in its
+bounded progress ledger. To avoid losing the one useful result under an OPDS
+page's unrelated catalog entries, the collector now tracks **up to ten**
+search-result candidates per successful search, with up to twelve visible in
+the compact context snapshot. When a retrievable unread candidate is selected,
+the current context includes `recommended_unread_evidence`, containing its
+**exact run-scoped evidence ID**, title, author where available and source ID.
+This is a discovery reference only; it is never elevated to a verified finding.
+
+The restricted research report materializer also copies the authoritative
+`Assignment.objective` into the generated JSON rather than trusting the
+model's paraphrase. Host verification of the JSON file's shape does not mean
+research findings are true or complete.
+
+Regressions cover a relevant book appearing after six unrelated OPDS entries,
+preserved recommended-evidence IDs, and an attempted model replacement of
+the authorized assignment objective.
