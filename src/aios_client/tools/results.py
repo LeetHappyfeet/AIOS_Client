@@ -147,6 +147,7 @@ class ResultTools:
                 "source_id": receipt["source_id"],
                 "kind": receipt["kind"],
                 "title": receipt["title"][:200],
+                "author": receipt.get("author", "")[:200],
                 "location": receipt.get("location"),
                 "section": receipt.get("section"),
                 "sections_read": receipt.get("sections", []),
