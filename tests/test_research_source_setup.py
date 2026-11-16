@@ -186,3 +186,20 @@ def test_file_format_still_requires_canonical_ids(tmp_path):
             "id": "Calibre", "adapter": "calibre_opds",
             "endpoint": "http://192.168.1.16/",
         }]})
+
+
+def test_research_permissions_visible_outside_manual_routing():
+    """Automatic chat routing must not hide source grants or tool mode."""
+    from pathlib import Path
+    html = (Path(__file__).parents[1] / "src" / "aios_client" / "static" / "setup.html").read_text()
+    start = html.index('<div id="manualRouting" hidden>')
+    permissions = html.index('<summary>Research permissions</summary>')
+    http_probes = html.index('<summary>HTTP probe destinations</summary>')
+    # Manual routing's final explanatory paragraph ends with the closing div.
+    manual_close = html.index(
+        'Never enter the operator/review credential in this client.</small></div>',
+        start,
+    )
+    assert start < manual_close < permissions < http_probes
+    assert 'id="gToolMode"' in html[permissions:http_probes]
+    assert 'id="gResearchSources"' in html[permissions:http_probes]
