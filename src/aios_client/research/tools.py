@@ -483,9 +483,21 @@ class ResearchTools:
             sections = document["sections"]
             limitations = document["limitations"]
             if section_index is None:
-                terms = internal.get("query", "").casefold().split()
-                matched = next((i for i, (_, value) in enumerate(sections)
-                                if terms and all(t in value.casefold() for t in terms)), 0)
+                terms = [
+                    "".join(c for c in word.casefold() if c.isalnum())
+                    for word in internal.get("query", "").split()
+                ]
+                terms = [word for word in terms if len(word) >= 4]
+                # A compound query rarely appears in full on the same PDF page.
+                # Score bounded extracted sections by useful term overlap, with
+                # five-character prefixes bridging glacier/glacial/glaciation.
+                def relevance(text):
+                    lower = text.casefold()
+                    return sum(2 if term in lower else
+                               1 if len(term) >= 5 and term[:5] in lower else 0
+                               for term in terms)
+                matched = max(range(len(sections)),
+                              key=lambda i: relevance(sections[i][1]), default=0)
             else:
                 matched = section_index
             if matched >= len(sections):
