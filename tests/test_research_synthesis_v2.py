@@ -60,6 +60,7 @@ def test_host_merges_search_log_and_rejects_unsupported_citations():
     result = json.loads(merge_research_report(spec, tools, json.dumps(model)))
     assert result["objective"] == spec.objective
     assert result["outcome"] == "partial"
+    assert "whole-library coverage remains unknown" in result["summary"]
     assert len(result["findings"]) == 1
     assert result["findings"][0]["evidence_id"] == "a" * 24
     assert result["search_log"][0]["status"] == "source_error"
