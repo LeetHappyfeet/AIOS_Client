@@ -472,6 +472,20 @@ class ResearchTools:
         cache_key = (evidence_id, cursor, limit, section_index)
         if cache_key in self.read_cache:
             return {**self.read_cache[cache_key], "cache_hit": True}
+        # A known failed acquisition does not become readable by changing
+        # passage cursor or text limit. Reuse its failure without burning
+        # another passage budget slot or downloading it again.
+        previous = self.evidence.get(evidence_id)
+        if previous and previous["public"].get("kind") == "calibre_book":
+            acquisition = previous["internal"].get("acquisition")
+            cached = self.document_cache.get(acquisition["url"]) if acquisition else None
+            if cached and cached.get("error"):
+                source = self.sources[previous["public"]["source_id"]]
+                return {"evidence": previous["public"].copy(),
+                        "error": cached["error"], "cache_hit": True,
+                        "limitations": cached.get("limitations", []),
+                        **({"limit_bytes": source.max_document_bytes}
+                           if cached["error"] == "response_too_large" else {})}
         if not self.control.allowed("passage"):
             return {"error": "research_passage_limit", "research_progress": self.control.snapshot()}
         self.control.passages += 1
