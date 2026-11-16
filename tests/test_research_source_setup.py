@@ -203,3 +203,29 @@ def test_research_permissions_visible_outside_manual_routing():
     assert start < manual_close < permissions < http_probes
     assert 'id="gToolMode"' in html[permissions:http_probes]
     assert 'id="gResearchSources"' in html[permissions:http_probes]
+
+
+def test_searxng_403_explains_json_format_and_access_policy():
+    calls = []
+    def reject(request):
+        calls.append(str(request.url))
+        return httpx.Response(403, text="Forbidden")
+    result = probe_source(
+        {"id": "searx", "adapter": "searxng",
+         "endpoint": "http://192.168.1.4:8080/"},
+        transport=httpx.MockTransport(reject),
+    )
+    assert result["ok"] is False
+    assert result["status_code"] == 403
+    assert result["reason"] == "http_status"
+    assert "settings.yml" in result["hint"]
+    assert "search.formats" in result["hint"]
+    assert "reverse-proxy" in result["hint"]
+    assert "format=json" in calls[0]
+    calibre = probe_source(
+        {"id": "calibre", "adapter": "calibre_opds",
+         "endpoint": "http://192.168.1.16/"},
+        transport=httpx.MockTransport(reject),
+    )
+    assert calibre["status_code"] == 403
+    assert "hint" not in calibre
