@@ -38,6 +38,7 @@ class AgentSession:
         )
         self.journal, self.run_id = journal, run_id
         self.control, self.gate, self.deadline = control, gate, deadline
+        self.workspace.assignment_deadline = deadline
         self.progress, self.observe = progress, observe
         self.hud_chars = len(worker_brief or legacy_hud or "")
         if legacy_hud is not None:

@@ -46,6 +46,7 @@ class Workspace:
         self.artifacts.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.secrets = tuple(s for s in secrets if s)
         self.cancelled = threading.Event()
+        self.assignment_deadline = None
         self.filesystem = files.FileTools(self.root, self.cancelled)
         self.process_manager = processes.ProcessTools(
             self, on_event, backend=process_backend

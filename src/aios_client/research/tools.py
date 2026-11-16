@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 from typing import Annotated
-from urllib.parse import quote, urljoin
+from urllib.parse import quote, unquote, urljoin
 from xml.etree import ElementTree
 
 import httpx
@@ -15,6 +17,7 @@ from pydantic import Field
 
 from .documents import MAX_DOCUMENT, digest, extract_document, html_text
 from .index import DocumentIndex
+from .http import SEARXNG_FORBIDDEN_HINT, fetch, searxng_request
 from .evidence import EvidenceStore
 from .control import ResearchControl
 from ..tools.network import canonical_origin
@@ -49,9 +52,10 @@ class ResearchTools:
 
     def _store(self, source, kind, title, excerpt, *, url=None, location=None,
                sha256=None, internal=None, author=None):
-        excerpt = self.workspace.redact(excerpt[:1500])
-        title = self.workspace.redact(title[:200])
-        identity = json.dumps([source.id, kind, url, location, sha256, excerpt],
+        excerpt = self.workspace.redact(excerpt)[:1500]
+        title = self.workspace.redact(title)[:200]
+        identity = json.dumps([source.id, kind, (internal or {}).get("fetch_url", url),
+                               location, sha256, excerpt],
                               ensure_ascii=True, sort_keys=True)
         evidence_id = hashlib.sha256(identity.encode()).hexdigest()[:24]
         item = {"evidence_id": evidence_id, "source_id": source.id, "kind": kind,
@@ -70,42 +74,35 @@ class ResearchTools:
             self.receipts.save(item)
         return item
 
-    def _get(self, url, *, max_bytes=131072, accept="application/json"):
-        """No redirects, proxy env, cookies, or ambient credentials."""
-        data = bytearray()
-        try:
-            with httpx.Client(transport=self.transport, trust_env=False,
-                              follow_redirects=False, timeout=10) as client:
-                with client.stream("GET", url, headers={
-                    "Accept": accept, "Accept-Encoding": "identity"
-                }) as response:
-                    if response.status_code != 200:
-                        return None, None, f"http_status_{response.status_code}"
-                    if response.headers.get("content-encoding", "identity").lower() != "identity":
-                        return None, None, "encoded_response"
-                    content_type = response.headers.get("content-type", "").lower()
-                    chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
-                    for chunk in chunks:
-                        self.workspace.guard()
-                        if len(data) + len(chunk) > max_bytes:
-                            return None, None, "response_too_large"
-                        data.extend(chunk)
-                    return bytes(data), content_type, None
-        except (httpx.HTTPError, TimeoutError) as exc:
-            return None, None, type(exc).__name__
+    def _contains_secret(self, value):
+        decoded = unquote(value)
+        return any(secret in value or secret in decoded for secret in self.workspace.secrets)
+
+    def _get(self, url, *, max_bytes=131072, accept="application/json", form=None):
+        self.workspace.guard()
+        if self._contains_secret(url):
+            return None, None, "configured_credential"
+        timeout = min(10, self.workspace.command_timeout)
+        if self.workspace.assignment_deadline is not None:
+            timeout = min(timeout, self.workspace.assignment_deadline - time.monotonic())
+        if timeout <= 0:
+            return None, None, "TimeoutError"
+        return asyncio.run(fetch(url, transport=self.transport, timeout=timeout,
+                                 max_bytes=max_bytes, accept=accept, form=form,
+                                 guard=self.workspace.guard))
 
     def _searxng(self, source, query, limit):
-        url = source.endpoint.rstrip("/") + "/search"
-        # httpx.QueryParams ensures encoded user query, rather than building a URL.
-        req = str(httpx.URL(url).copy_merge_params({"q": query, "format": "json"}))
-        data, content_type, error = self._get(req)
+        url, form = searxng_request(source.endpoint, query)
+        data, content_type, error = self._get(url, form=form)
+        if error == "http_status_403":
+            return {"error": error, "hint": SEARXNG_FORBIDDEN_HINT}
         if error:
             return {"error": error}
         if "json" not in content_type:
             return {"error": "not_json"}
         try:
             payload = json.loads(data)
-        except (ValueError, UnicodeError):
+        except (ValueError, RecursionError):
             return {"error": "invalid_json"}
         if not isinstance(payload, dict) or not isinstance(payload.get("results"), list):
             return {"error": "invalid_results"}
@@ -117,14 +114,25 @@ class ResearchTools:
             if not isinstance(title, str) or not isinstance(excerpt, str) or not isinstance(url, str):
                 continue
             try:
-                origin = canonical_origin(url)
-                if not origin:
-                    continue
+                canonical_origin(url)
             except ValueError:
                 continue
-            items.append(self._store(source, "web_search_result", title, excerpt, url=url[:1500]))
+            if self._contains_secret(url):
+                continue
+            items.append(self._store(source, "web_search_result", title, excerpt,
+                                     url=url[:1500], internal={"fetch_url": url}))
             if len(items) >= limit:
                 break
+        failures = payload.get("unresponsive_engines")
+        failure_count = sum(
+            isinstance(entry, list) and len(entry) == 2
+            and all(isinstance(value, str) for value in entry)
+            for entry in failures
+        ) if isinstance(failures, list) else 0
+        if failure_count:
+            return {"results": items, "engine_failure_count": failure_count}
+        if not items and payload["results"]:
+            return {"error": "no_usable_results"}
         return {"results": items}
 
     def _safe_local(self, source, relative):
@@ -336,6 +344,7 @@ class ResearchTools:
             "query": query[:120], "source_id": source_id or "automatic",
             "status": response.get("status", "unknown"),
             "errors": dict(response.get("errors") or {}),
+            "engine_failures": dict(response.get("engine_failures") or {}),
             "attempted_sources": list(response.get("attempted_sources") or []),
             "result_count": len(response.get("results") or []),
         })
@@ -380,6 +389,10 @@ class ResearchTools:
             return {"status": "unavailable", "results": [], "reason": "no_authorized_sources"}
         if source_id is not None and source_id not in self.sources:
             raise ValueError("Research source is not authorized")
+        if self._contains_secret(query):
+            return self._audit_search("[REDACTED]", source_id, {
+                "status": "query_rejected", "results": [], "reason": "configured_credential",
+            })
         key = (source_id or "__automatic__", " ".join(query.casefold().split()))
         if key in self.search_cache:
             cached = self.search_cache[key].copy()
@@ -394,8 +407,12 @@ class ResearchTools:
                     "research_progress": self.control.snapshot()})
         # Avoid spending the remaining budget on known-bad compound syntax.
         # Single-word recovery probes remain available within the same budget.
-        selected = ([source_id] if source_id else list(self.sources))
-        unhealthy = [sid for sid in selected if self.source_failures.get(sid, 0) >= 3]
+        options = ([self.sources[source_id]] if source_id else
+                   sorted(self.sources.values(), key=lambda s: (s.priority, s.id))[:2])
+        if len(options) == 2 and not options[1].allow_query_fallback:
+            options = options[:1]
+        unhealthy = [source.id for source in options
+                     if self.source_failures.get(source.id, 0) >= 3]
         if unhealthy and len(query.split()) > 1:
             return self._audit_search(query, source_id, {"status": "source_unhealthy", "results": [],
                     "attempted_sources": [],
@@ -408,11 +425,9 @@ class ResearchTools:
         self.control.searches += 1
         self.control.queries.append({"source_id": source_id or "auto",
                                      "query": key[1][:120]})
-        options = ([self.sources[source_id]] if source_id else
-                   sorted(self.sources.values(), key=lambda s: (s.priority, s.id)))
-        attempted, errors, details = [], {}, {}
+        attempted, errors, details, engine_failures = [], {}, {}, {}
         result = None
-        for source in (options if source_id else options[:2]):
+        for source in options:
             self.workspace.guard()
             attempted.append(source.id)
             if source.adapter == "searxng":
@@ -421,8 +436,10 @@ class ResearchTools:
                 found = self._calibre(source, query, 10)
             else:
                 found = self._local_text(source, query, 10)
+            if found.get("engine_failure_count"):
+                engine_failures[source.id] = found["engine_failure_count"]
             if found.get("results"):
-                result = {"status": "ok", "source_id": source.id,
+                result = {"status": "partial_results" if engine_failures else "ok", "source_id": source.id,
                           "attempted_sources": attempted, **found}
                 break
             if found.get("error"):
@@ -430,13 +447,19 @@ class ResearchTools:
                 details[source.id] = {
                     "full_text_error": found.get("full_text_error"),
                     "final_search_error": found["error"],
+                    **({"hint": found["hint"]} if found.get("hint") else {}),
                     **({"opds_search_probe": found["opds_search_probe"]}
                        if found.get("opds_search_probe") else {}),
                 }
         if result is None:
-            result = {"status": "source_error" if errors else "no_results",
-                      "results": [], "attempted_sources": attempted,
-                      "errors": errors, "error_details": details}
+            status = "source_error" if errors else "no_results"
+            if engine_failures:
+                status = "partial_results"
+            result = {"status": status, "results": [], "attempted_sources": attempted}
+        if errors or not result["results"]:
+            result.update(errors=errors, error_details=details)
+        if engine_failures:
+            result["engine_failures"] = engine_failures
         for sid in attempted:
             self.source_failures[sid] = (self.source_failures.get(sid, 0) + 1
                                          if sid in errors else 0)
@@ -497,10 +520,11 @@ class ResearchTools:
         kind = item["kind"]
         internal = entry["internal"]
         if kind == "web_search_result":
-            if canonical_origin(item["url"]) not in source.read_origins:
+            url = internal["fetch_url"]
+            if canonical_origin(url) not in source.read_origins:
                 return {"evidence": item, "full_document_retrieved": False,
                         "note": "Only search excerpt available. Result origin is not approved for reading."}
-            data, content_type, error = self._get(item["url"], max_bytes=250000,
+            data, content_type, error = self._get(url, max_bytes=250000,
                                                  accept="text/html, text/plain")
             if error:
                 return {"evidence": item, "error": error, "full_document_retrieved": False}

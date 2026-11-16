@@ -21,6 +21,10 @@ FEED = f"""<feed xmlns="{ATOM}"><entry>
 
 
 class Host:
+    secrets = ()
+    command_timeout = 120
+    assignment_deadline = None
+
     def guard(self):
         pass
 

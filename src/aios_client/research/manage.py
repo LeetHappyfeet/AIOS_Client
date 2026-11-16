@@ -5,6 +5,7 @@ No scanning or discovery of network endpoints is performed.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import tempfile
@@ -12,7 +13,7 @@ import threading
 from pathlib import Path
 from xml.etree import ElementTree
 
-import httpx
+from .http import SEARXNG_FORBIDDEN_HINT, fetch, searxng_request
 from .sources import ResearchSource, SourceFile
 
 
@@ -141,43 +142,25 @@ def test_source(raw: dict, *, transport=None) -> dict:
     if source.adapter not in {"searxng", "calibre_opds"}:
         raise ValueError("Network test is supported for SearXNG and Calibre OPDS only")
     if source.adapter == "searxng":
-        url = source.endpoint.rstrip("/") + "/search"
-        url = str(httpx.URL(url).copy_merge_params({"q": "aios-connection-test", "format": "json"}))
+        url, form = searxng_request(source.endpoint, "aios-connection-test")
         accept = "application/json"
     else:
-        url = source.endpoint
+        url, form = source.endpoint, None
         accept = "application/atom+xml, application/xml"
+    content, media, error = asyncio.run(fetch(
+        url, transport=transport, timeout=6, max_bytes=MAX_TEST_BYTES,
+        accept=accept, form=form,
+    ))
+    if error:
+        result = {"ok": False, "source_id": source.id, "reason": error}
+        if error.startswith("http_status_"):
+            result.update(status_code=int(error.removeprefix("http_status_")), reason="http_status")
+            if source.adapter == "searxng" and result["status_code"] == 403:
+                result["hint"] = SEARXNG_FORBIDDEN_HINT
+        elif error not in {"encoded_response", "response_too_large"}:
+            result["reason"] = "connection_failed"
+        return result
     try:
-        with httpx.Client(transport=transport, follow_redirects=False,
-                          trust_env=False, timeout=httpx.Timeout(6.0, read=3.0)) as client:
-            with client.stream("GET", url, headers={
-                "Accept": accept, "Accept-Encoding": "identity",
-            }) as response:
-                status = response.status_code
-                if status != 200:
-                    result = {"ok": False, "source_id": source.id,
-                              "status_code": status, "reason": "http_status"}
-                    if source.adapter == "searxng" and status == 403:
-                        result["hint"] = (
-                            "SearXNG rejected the JSON search request (HTTP 403). "
-                            "Its JSON output format may be disabled. In SearXNG "
-                            "settings.yml, enable search.formats: [html, json] and "
-                            "restart SearXNG. If JSON is already enabled, check "
-                            "SearXNG limiter or reverse-proxy access rules."
-                        )
-                    return result
-                if response.headers.get("content-encoding", "identity").lower() != "identity":
-                    return {"ok": False, "source_id": source.id, "reason": "encoded_response"}
-                content = bytearray()
-                # httpx.MockTransport and some already-buffered responses
-                # can be stream-consumed at construction. Keep the byte cap
-                # for both buffered and genuinely streaming response bodies.
-                chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
-                for chunk in chunks:
-                    if len(content) + len(chunk) > MAX_TEST_BYTES:
-                        return {"ok": False, "source_id": source.id, "reason": "response_too_large"}
-                    content.extend(chunk)
-                media = response.headers.get("content-type", "").lower()
         if source.adapter == "searxng":
             if "json" not in media:
                 return {"ok": False, "source_id": source.id, "reason": "not_json"}
@@ -191,8 +174,6 @@ def test_source(raw: dict, *, transport=None) -> dict:
                                  "{http://www.w3.org/2005/Atom}entry")
         return {"ok": bool(valid), "source_id": source.id,
                 "status_code": 200, "reason": "connected" if valid else "invalid_response"}
-    except (httpx.HTTPError, OSError, TimeoutError):
-        return {"ok": False, "source_id": source.id, "reason": "connection_failed"}
-    except (ElementTree.ParseError, ValueError, UnicodeError):
+    except (ElementTree.ParseError, ValueError, RecursionError):
         # Never reflect response text or target host credentials in errors.
         return {"ok": False, "source_id": source.id, "reason": "invalid_response"}

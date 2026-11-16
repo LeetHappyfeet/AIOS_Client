@@ -15,7 +15,7 @@ automatically. The current adapter requires an endpoint ending in `/opds`;
 other OPDS paths would require an adapter change. The network test checks whether
 the resulting URL returns an Atom feed; it does **not** prove that the
 server's root page is an OPDS catalog. SearXNG accepts its base URL, for
-example `http://192.168.1.4:8080/`, and uses `/search?format=json`.
+example `http://192.168.1.4:8080/`, and sends a form-encoded POST to `/search` with `format=json`.
 
 The manually edited `research_sources.json` file remains strict: use
 lowercase canonical IDs and the **complete** Calibre `/opds` endpoint.
@@ -115,6 +115,22 @@ configuration JSON**, for example:
 Set the endpoint to the actual SearXNG base URL **reachable from the client
 host**. If SearXNG runs on a different LAN machine, localhost is not appropriate.
 SearXNG must have `json` enabled under `search.formats` in its settings.
+Enable only the upstream engines your agents may use in SearXNG itself.
+SearXNG accepts engine and category selectors in query text and can forward
+terms to upstream engines even when its endpoint is on your LAN.
+
+The research tool rejects queries containing a configured client credential
+before sending them. Each request has a total timeout of at most 10 seconds,
+capped by the remaining assignment time. Search reports distinguish empty
+results (`no_results`), provider errors (`source_error`), and incomplete
+engine coverage (`partial_results`, with counts by source). A 403 includes
+a hint about JSON output and access rules.
+
+To keep an automatic search from sending its query to a secondary network
+source, set `"allow_query_fallback": false` on that destination or choose
+**No** under **Accept automatic fallback queries** in setup. The default is
+true. The setting applies to the second source in priority order. The source
+can still be searched as the first source or by explicitly selecting its ID.
 
 In the relevant agent profile of the normal AIOS-Client configuration, add:
 

@@ -101,11 +101,12 @@ def merge_research_report(spec, tools, report):
         data["limitations"].append(
             f"{unsupported} model-authored findings omitted: no matching retrieved passage receipt.")
     # A failed search or unread acquisition cannot establish whole-library absence.
-    unresolved = any(row.get("status") in {"source_error", "source_unhealthy"}
+    incomplete_statuses = {"source_error", "source_unhealthy", "partial_results", "query_rejected"}
+    unresolved = any(row.get("status") in incomplete_statuses or row.get("errors")
                      for row in data["search_log"])
     if unresolved:
-        caveat = ("Some Calibre searches failed or were not attempted; "
-                  "library-wide absence of relevant material is not established.")
+        caveat = ("Some research searches failed, were skipped, or had incomplete coverage. "
+                  "Absence of relevant material is not established.")
         if caveat not in data["limitations"]:
             data["limitations"].append(caveat)
         # Do not publish a categorical whole-library negative from failed probes.

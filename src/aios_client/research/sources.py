@@ -27,6 +27,7 @@ class ResearchSource(BaseModel):
     root: str | None = None
     read_origins: list[str] = Field(default_factory=list, max_length=20)
     indexed: bool = False
+    allow_query_fallback: bool = True
     max_document_bytes: int = Field(default=12 * 1024 * 1024, ge=1024 * 1024, le=24 * 1024 * 1024)
 
     @model_validator(mode="after")
@@ -36,8 +37,9 @@ class ResearchSource(BaseModel):
         if any(not isinstance(t, str) or not SOURCE_ID.fullmatch(t) for t in self.topics):
             raise ValueError("Invalid research topic")
         from ..tools.network import canonical_origin
-        for origin in self.read_origins:
-            canonical_origin(origin, origin_only=True)
+        self.read_origins = [
+            canonical_origin(origin, origin_only=True) for origin in self.read_origins
+        ]
         if self.indexed and self.adapter != "local_documents":
             raise ValueError("Only local_documents supports indexing")
         if self.adapter != "searxng" and self.read_origins:
@@ -46,8 +48,9 @@ class ResearchSource(BaseModel):
             if self.root is not None or not self.endpoint:
                 raise ValueError("Network source requires endpoint and forbids root")
             normalized = base_url(self.endpoint)
-            if len(normalized) > 400 or "\\" in normalized:
+            if len(normalized) > 400:
                 raise ValueError("Invalid research source endpoint")
+            canonical_origin(normalized)
             self.endpoint = normalized
         else:
             if self.endpoint is not None or not self.root:
