@@ -279,7 +279,12 @@ class ResearchTools:
             item = entry["public"]
             if source_id is not None and item["source_id"] != source_id:
                 continue
-            if entry.get("read") is not None or not entry["internal"].get("acquisition"):
+            acquisition = entry["internal"].get("acquisition")
+            if entry.get("read") is not None or not acquisition:
+                continue
+            # Failed and oversized acquisitions are not recommended again.
+            if acquisition["url"] in self.document_cache and self.document_cache[
+                    acquisition["url"]].get("error"):
                 continue
             score = sum(1 for term in terms if term in item["title"].casefold())
             if score:
@@ -307,6 +312,16 @@ class ResearchTools:
             cached["results"] = cached.get("results", [])[:limit]
             cached["cache_hit"] = True
             return cached
+        # Avoid using all eight queries on malformed compound expressions.
+        # Single-word recovery probes remain available within the same budget.
+        selected = ([source_id] if source_id else list(self.sources))
+        unhealthy = [sid for sid in selected if self.source_failures.get(sid, 0) >= 3]
+        if unhealthy and len(query.split()) > 1:
+            return {"status": "source_unhealthy", "results": [],
+                    "attempted_sources": [],
+                    "reason": "Repeated provider errors; try one short keyword",
+                    "source_ids": unhealthy,
+                    "research_progress": self.control.snapshot()}
         unread = self.recommended_unread(source_id)
         if unread and self.control.searches >= 2 and not self.control.verified_passages:
             return {"status": "read_recommended", "results": [],
@@ -355,6 +370,8 @@ class ResearchTools:
         self.control.candidates = self.control.candidates[-12:]
         response = result.copy()
         response["results"] = response["results"][:limit]
+        response["source_health"] = {sid: {"consecutive_failures": failures}
+                                     for sid, failures in self.source_failures.items()}
         response["research_progress"] = self.control.snapshot()
         return response
 
