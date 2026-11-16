@@ -166,7 +166,7 @@ class AgentSession:
                 "host": self.workspace.host_info(),
                 "result_staged": self.workspace.published_result is not None,
                 **({"research_progress": self.workspace.research_tools.control.snapshot(),
-                    "research_source_health": self.workspace.research_tools.source_failures}
+                    "research_source_health": getattr(self.workspace.research_tools, "source_failures", {})}
                    if research else {}),
             }
             if research:
@@ -183,7 +183,7 @@ class AgentSession:
                         "Use only observed evidence receipts; do not invent findings. "
                         "If evidence is insufficient, report partial or blocked."})
                 else:
-                    unread = self.workspace.research_tools.recommended_unread()
+                    unread = getattr(self.workspace.research_tools, "recommended_unread", lambda: None)()
                     self.context.state["research_phase"] = (
                         "evaluate_candidate" if unread and budget.searches >= 2 else "collect"
                     )
