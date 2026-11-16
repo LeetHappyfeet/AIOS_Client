@@ -169,7 +169,11 @@ def test_source(raw: dict, *, transport=None) -> dict:
                 if response.headers.get("content-encoding", "identity").lower() != "identity":
                     return {"ok": False, "source_id": source.id, "reason": "encoded_response"}
                 content = bytearray()
-                for chunk in response.iter_raw():
+                # httpx.MockTransport and some already-buffered responses
+                # can be stream-consumed at construction. Keep the byte cap
+                # for both buffered and genuinely streaming response bodies.
+                chunks = (response.content,) if response.is_stream_consumed else response.iter_raw()
+                for chunk in chunks:
                     if len(content) + len(chunk) > MAX_TEST_BYTES:
                         return {"ok": False, "source_id": source.id, "reason": "response_too_large"}
                     content.extend(chunk)

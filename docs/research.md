@@ -495,3 +495,24 @@ python3 -m pytest -q tests/test_research_synthesis_v2.py \
 This patch does not establish a research finding solely by passing a JSON
 structure check. Live integration with the actual Calibre content server
 remains necessary before promoting it into development.
+
+
+## Retained evidence across AIOS-Client → AIOS
+
+A partial or truncated research run may have `findings: []` despite having
+retrieved genuine passage text. The client now retains a **bounded, explicitly
+named evidence projection** in `result_summary`: up to eight authoritatively
+recorded passage receipts from `research_progress.verified_passages`, up to
+eight worker evidence references, and up to twelve exact research search
+statuses in `search_log`. Passage excerpts are truncated to 280 characters
+each; remote URLs, acquisition locators and unrelated tool history are never
+included. This summary is a transport envelope, not an independently verified
+research conclusion. AIOS can expose these using `read_work_result` sections
+`evidence`, `research_progress`, and `search_log` even when the main
+`report` was truncated at the 6,000-character transport threshold.
+
+The existing summary size budget remains 18,000 encoded characters.
+Any clipped evidence is marked by the existing `transport_truncated` field.
+No migration, new execution capability, or general file access is necessary.
+Use `python -m pytest -q tests/test_retained_research_transport.py` to
+check projection size and URL exclusion before running a live agent.
