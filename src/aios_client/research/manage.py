@@ -5,17 +5,13 @@ No scanning or discovery of network endpoints is performed.
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import os
 import tempfile
 import threading
 from pathlib import Path
-from urllib.parse import quote
 
 import httpx
-from pydantic import ValidationError
-
 from .sources import ResearchSource, SourceFile
 
 
@@ -98,6 +94,8 @@ def update_source(path: Path, *, source: dict | None = None,
                 if previous_id not in by_id:
                     raise ValueError("Original research source was not found")
                 by_id.pop(previous_id)
+            if not parsed["enabled"] and parsed["id"] in granted_ids:
+                raise ValueError("Source is still granted to an agent; remove grants before disabling")
             by_id[parsed["id"]] = parsed
         elif delete_id:
             if delete_id in granted_ids:
@@ -159,6 +157,6 @@ def test_source(raw: dict, *, transport=None) -> dict:
                 "status_code": 200, "reason": "connected" if valid else "invalid_response"}
     except (httpx.HTTPError, OSError, TimeoutError):
         return {"ok": False, "source_id": source.id, "reason": "connection_failed"}
-    except (ValueError, UnicodeError, json.JSONDecodeError, Exception) as exc:
+    except (ValueError, UnicodeError):
         # Never reflect response text or target host credentials in errors.
         return {"ok": False, "source_id": source.id, "reason": "invalid_response"}
