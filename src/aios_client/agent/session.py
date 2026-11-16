@@ -229,6 +229,11 @@ class AgentSession:
                     return self.research_fallback("Model continued requesting tools in reporting phase")
                 continue
             if diagnostics.get("finish_reason") == "length":
+                if finalizing:
+                    self.record("research_final_truncated", {"step": step + 1})
+                    if step == step_limit - 1:
+                        return self.research_fallback("Model output was truncated during reporting")
+                    continue
                 self.recover_response("Provider response reached its output token limit (finish_reason=length)")
                 continue
             if diagnostics.get("finish_reason") == "content_filter":
