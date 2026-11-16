@@ -77,7 +77,7 @@ def test_search_http_failure_is_not_an_empty_catalog():
         lambda request: httpx.Response(403)))
     result = tool.research_search("glacier", "calibre")
     assert result["status"] == "source_error"
-    assert result["errors"] == {"calibre": "http_status"}
+    assert result["errors"] == {"calibre": "http_status_403"}
     assert tool.research_search("GLACIER", "calibre")["cache_hit"] is True
 
 
@@ -266,3 +266,52 @@ def test_reporting_phase_rejects_more_tool_calls():
     assert attempts[0] == []
     assert result["outcome"] == "blocked"
     assert research_tools.control.searches == 0
+
+
+def test_multiterm_calibre_metadata_fallback_uses_quoted_expression():
+    observed = []
+    def serve(request):
+        observed.append(str(request.url))
+        if request.url.params.get("full_text") == "y":
+            return httpx.Response(404)
+        return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                              text=FEED)
+    tools = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    response = tools.research_search("laurentide ice sheet", "calibre")
+    assert response["status"] == "ok"
+    assert response["search_mode"] == "metadata"
+    assert response["full_text_error"] == "http_status_404"
+    assert len(observed) == 2
+    assert "laurentide%20ice%20sheet" in observed[0]
+    assert "%22laurentide%20ice%20sheet%22" in observed[1]
+
+
+def test_recommended_candidate_takes_priority_over_next_search():
+    def serve(request):
+        return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                              text=FEED)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    first = tool.research_search("glacial", "calibre")
+    assert first["status"] == "ok"
+    # Two unique searches make further discovery wait for existing evidence.
+    assert tool.research_search("moraine", "calibre")["status"] == "ok"
+    third = tool.research_search("varves", "calibre")
+    assert third["status"] == "read_recommended"
+    assert third["recommended_evidence"]["title"] == "Glacial Geology of Michigan"
+    assert tool.control.searches == 2
+    assert third["recommended_evidence"]["content_scope"] == "search_excerpt_only"
+
+
+def test_unhealthy_calibre_search_preserves_single_word_probe_budget():
+    def serve(request):
+        return httpx.Response(404)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    for keyword in ("ice sheet", "glacial drift", "proglacial lakes"):
+        assert tool.research_search(keyword, "calibre")["status"] == "source_error"
+    assert tool.control.searches == 3
+    response = tool.research_search("great lakes geology", "calibre")
+    assert response["status"] == "source_unhealthy"
+    assert tool.control.searches == 3
+    one_word = tool.research_search("glacier", "calibre")
+    assert one_word["status"] == "source_error"
+    assert tool.control.searches == 4
