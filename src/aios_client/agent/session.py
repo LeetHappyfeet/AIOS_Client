@@ -135,8 +135,9 @@ class AgentSession:
     def run(self):
         research = (getattr(self.registry, "tool_mode", "workspace") == "research"
                     and bool(self.workspace.research_tools.sources))
-        report_steps = min(3, max(1, self.spec.budgets.model_steps // 4))
-        for step in range(self.spec.budgets.model_steps):
+        step_limit = min(self.spec.budgets.model_steps, 20) if research else self.spec.budgets.model_steps
+        report_steps = min(3, max(1, step_limit // 4))
+        for step in range(step_limit):
             self.check()
             records = self.workspace.process_status()["processes"]
             active = [r for r in records if not r["output_complete"]]
@@ -167,7 +168,7 @@ class AgentSession:
             }
             if research:
                 budget = self.workspace.research_tools.control
-                finalizing = (step >= self.spec.budgets.model_steps - report_steps
+                finalizing = (step >= step_limit - report_steps
                               or budget.searches >= budget.max_searches
                               or budget.passages >= budget.max_passages
                               or budget.failed_acquisitions >= budget.max_failed_acquisitions)
@@ -223,7 +224,7 @@ class AgentSession:
                 # Do not execute new tool calls in the reserved synthesis phase.
                 self.record("research_tool_calls_refused", {"step": step + 1,
                             "count": len(response["tool_calls"])})
-                if step == self.spec.budgets.model_steps - 1:
+                if step == step_limit - 1:
                     return self.research_fallback("Model continued requesting tools in reporting phase")
                 continue
             if diagnostics.get("finish_reason") == "length":
@@ -238,7 +239,7 @@ class AgentSession:
                 "role": "assistant",
                 "content": self.workspace.redact(response.get("content") or ""),
             }
-            if finalizing and not calls:
+            if research and not calls:
                 try:
                     value = json.loads(assistant["content"])
                     if (not isinstance(value, dict) or value.get("outcome") not in
@@ -248,7 +249,7 @@ class AgentSession:
                         raise ValueError("Missing required research report fields")
                 except (ValueError, TypeError):
                     self.record("research_invalid_final", {"step": step + 1})
-                    if step == self.spec.budgets.model_steps - 1:
+                    if step == step_limit - 1:
                         return self.research_fallback("Model did not produce valid final JSON")
                     continue
             if not calls and not assistant["content"].strip():
