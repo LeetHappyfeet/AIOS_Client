@@ -44,7 +44,7 @@ def test_search_dedup_and_calibre_acquisition_cache(monkeypatch):
                               content=b"sample-pdf")
     tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
     monkeypatch.setattr("aios_client.research.tools.extract_document",
-                        lambda data, ext: ([("page:1", "Ice sheet evidence"),
+                        lambda data, ext, **kwargs: ([("page:1", "Ice sheet evidence"),
                                             ("page:2", "Moraines")], []))
     first = tool.research_search("glacier", "calibre")
     assert first["status"] == "ok"
@@ -398,7 +398,7 @@ def test_first_read_chooses_relevant_pdf_page_for_compound_query(monkeypatch):
         return httpx.Response(200, headers={"content-type": "application/pdf"},
                               content=b"mock-pdf")
     monkeypatch.setattr("aios_client.research.tools.extract_document",
-                        lambda data, kind: ([
+                        lambda data, kind, **kwargs: ([
                             ("page:1", "General science and basic chemistry"),
                             ("page:2", "Pleistocene glacial deposits around Great Lakes moraines"),
                             ("page:3", "A non-glacial chapter on rock types"),
