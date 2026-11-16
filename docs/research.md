@@ -3,6 +3,25 @@
 Research is opt-in. Existing AIOS-Client installations have **no** granted research
 sources. No Google, paid API, or SearXNG service is required to run the client.
 
+## UI input normalization for LAN servers
+
+In the setup page, source names such as `Calibre` and `SearXNG` are
+normalized to the lowercase identifiers `calibre` and `searxng`. Spaces
+become hyphens. Agent source permissions always reference these canonical IDs.
+
+For Calibre OPDS, enter the Content Server base address, such as
+`http://192.168.1.16/`; the browser editor and setup API append `/opds`
+automatically. If your Calibre server serves OPDS at a different location,
+configure the actual OPDS URL directly. The network test checks whether
+the resulting URL returns an Atom feed; it does **not** prove that the
+server's root page is an OPDS catalog. SearXNG accepts its base URL, for
+example `http://192.168.1.4:8080/`, and uses `/search?format=json`.
+
+The manually edited `research_sources.json` file remains strict: use
+lowercase canonical IDs and the **complete** Calibre `/opds` endpoint.
+UI normalization happens only when editing or testing an operator draft,
+not when silently loading existing grant/ACL identifiers.
+
 ## Configure sources from the setup page or a JSON file
 
 In the AIOS-Client setup page (normally port 8765), open **Research sources**.
