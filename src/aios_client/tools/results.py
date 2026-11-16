@@ -149,6 +149,7 @@ class ResultTools:
                 "title": receipt["title"][:200],
                 "location": receipt.get("location"),
                 "section": receipt.get("section"),
+                "sections_read": receipt.get("sections", []),
                 "document_sha256": receipt.get("document_sha256"),
                 "retrieved_at": receipt.get("retrieved_at"),
                 "verification": "source_retrieved_not_claim_verified",
