@@ -123,6 +123,7 @@ class AgentSession:
                         + str(len(items)) + " distinct passage references were retrieved; "
                         "the original research findings were not established."),
             "evidence": items,
+            "findings": [],  # Retrieved passages are not validated research conclusions.
             "limitations": [reason, "No model-authored final synthesis was produced.",
                             "Retrieved sources are not independent proof of any claim."],
             "artifacts": [], "requested_content": [],
