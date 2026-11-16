@@ -57,6 +57,21 @@ class EvidenceStore:
             "public_url": item.get("url") if item["kind"] == "web_search_result" else None,
         }
         with self._open() as db:
+            previous = db.execute(
+                "SELECT record,verified FROM evidence WHERE run_id=? AND evidence_id=?",
+                (self.run_id, item["evidence_id"]),
+            ).fetchone()
+            sections = []
+            if previous:
+                prior = json.loads(previous[0])
+                sections = prior.get("sections", [])
+                if not verified and previous[1]:
+                    # Repeated catalog searches cannot downgrade a passage receipt.
+                    return
+            if verified and section is not None and section not in sections:
+                sections = (sections + [section])[-32:]
+            record["sections"] = sections
+            verified = verified or (bool(previous[1]) if previous else False)
             db.execute("INSERT OR REPLACE INTO evidence VALUES(?,?,?,?,?)", (
                 self.run_id, item["evidence_id"],
                 json.dumps(record, ensure_ascii=True), int(verified),
