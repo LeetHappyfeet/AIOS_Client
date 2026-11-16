@@ -319,7 +319,13 @@ class ResearchTools:
             cached["results"] = cached.get("results", [])[:limit]
             cached["cache_hit"] = True
             return cached
-        # Avoid using all eight queries on malformed compound expressions.
+        unread = self.recommended_unread(source_id)
+        if unread and self.control.searches >= 2 and not self.control.verified_passages:
+            return {"status": "read_recommended", "results": [],
+                    "recommended_evidence": unread,
+                    "reason": "Read the available relevant book before further searching",
+                    "research_progress": self.control.snapshot()}
+        # Avoid spending the remaining budget on known-bad compound syntax.
         # Single-word recovery probes remain available within the same budget.
         selected = ([source_id] if source_id else list(self.sources))
         unhealthy = [sid for sid in selected if self.source_failures.get(sid, 0) >= 3]
@@ -328,12 +334,6 @@ class ResearchTools:
                     "attempted_sources": [],
                     "reason": "Repeated provider errors; try one short keyword",
                     "source_ids": unhealthy,
-                    "research_progress": self.control.snapshot()}
-        unread = self.recommended_unread(source_id)
-        if unread and self.control.searches >= 2 and not self.control.verified_passages:
-            return {"status": "read_recommended", "results": [],
-                    "recommended_evidence": unread,
-                    "reason": "Read the available relevant book before further searching",
                     "research_progress": self.control.snapshot()}
         if not self.control.allowed("search"):
             return {"status": "budget_exhausted", "results": [],
