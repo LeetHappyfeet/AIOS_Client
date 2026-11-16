@@ -118,7 +118,7 @@ class AgentSession:
             })
         outcome = "partial" if items else "blocked"
         report = {
-            "objective": self.spec.objective,
+            "objective": getattr(getattr(self, "spec", None), "objective", "Research assignment"),
             "outcome": outcome,
             "summary": ("Research ended without a completed synthesis. "
                         + str(len(items)) + " distinct passage references were retrieved; "
