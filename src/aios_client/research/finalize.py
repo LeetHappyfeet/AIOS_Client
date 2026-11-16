@@ -30,6 +30,12 @@ def materialize_research_report(workspace, spec, report):
             and isinstance(data.get("evidence"), list)
             and isinstance(data.get("limitations"), list)):
         return []
+    # The operator-supplied assignment is authoritative, not the model's
+    # paraphrase of it. This prevents a passing file-shape check from silently
+    # replacing the task statement with a different objective.
+    objective = getattr(spec, "objective", None)
+    if isinstance(objective, str) and objective.strip():
+        data["objective"] = objective
     # The model can supply additional JSON fields, but cannot choose filenames.
     raw = json.dumps(workspace.clean(data), ensure_ascii=False, indent=2)
     encoded = (raw + "\n").encode("utf-8")
