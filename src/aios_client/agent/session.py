@@ -104,7 +104,38 @@ class AgentSession:
         self.control()
         self.workspace.guard()
 
+    def research_fallback(self, reason):
+        """Produce an auditable outcome, never invented geological findings."""
+        control = self.workspace.research_tools.control
+        items = []
+        for reference in control.verified_passages[-12:]:
+            item = self.workspace.research_tools.evidence.get(reference["evidence_id"], {})
+            public = item.get("public", {})
+            items.append({
+                "evidence_id": reference["evidence_id"], "source_id": public.get("source_id"),
+                "title": public.get("title"), "section": reference["section"],
+                "note": "Passage retrieved; no independent claim verified",
+            })
+        outcome = "partial" if items else "blocked"
+        report = {
+            "outcome": outcome,
+            "summary": ("Research ended without a completed synthesis. "
+                        + str(len(items)) + " distinct passage references were retrieved; "
+                        "the original research findings were not established."),
+            "evidence": items,
+            "limitations": [reason, "No model-authored final synthesis was produced.",
+                            "Retrieved sources are not independent proof of any claim."],
+            "artifacts": [], "requested_content": [],
+            "research_progress": control.snapshot(),
+        }
+        self.record("research_partial_report", {"reason": reason,
+                    "evidence_count": len(items), "outcome": outcome})
+        return json.dumps(report, ensure_ascii=False)
+
     def run(self):
+        research = (getattr(self.registry, "tool_mode", "workspace") == "research"
+                    and bool(self.workspace.research_tools.sources))
+        report_steps = min(3, max(1, self.spec.budgets.model_steps // 4))
         for step in range(self.spec.budgets.model_steps):
             self.check()
             records = self.workspace.process_status()["processes"]
@@ -131,9 +162,28 @@ class AgentSession:
                 "processes": process_state,
                 "host": self.workspace.host_info(),
                 "result_staged": self.workspace.published_result is not None,
+                **({"research_progress": self.workspace.research_tools.control.snapshot()}
+                   if research else {}),
             }
+            if research:
+                budget = self.workspace.research_tools.control
+                finalizing = (step >= self.spec.budgets.model_steps - report_steps
+                              or budget.searches >= budget.max_searches
+                              or budget.passages >= budget.max_passages
+                              or budget.failed_acquisitions >= budget.max_failed_acquisitions)
+                if finalizing:
+                    self.context.state["research_phase"] = "report"
+                    self.context.append({"role": "user", "content":
+                        "RESEARCH PHASE ENDED. Do not call more tools. Return final JSON NOW "
+                        "with outcome, summary, evidence, limitations, artifacts, requested_content. "
+                        "Use only observed evidence receipts; do not invent findings. "
+                        "If evidence is insufficient, report partial or blocked."})
+                else:
+                    self.context.state["research_phase"] = "collect"
+            else:
+                finalizing = False
             messages = self.context.prepare()
-            tools = self.registry.catalog()
+            tools = [] if finalizing else self.registry.catalog()
             request_size = {
                 "messages_json_chars": len(json.dumps(messages)),
                 "history_json_chars": len(json.dumps(self.context.history)),
@@ -169,6 +219,13 @@ class AgentSession:
                 "step": step + 1, **diagnostics, "request_size": request_size,
                 "message_excerpt": raw[:16000], "message_truncated": len(raw) > 16000,
             })
+            if finalizing and response.get("tool_calls"):
+                # Do not execute new tool calls in the reserved synthesis phase.
+                self.record("research_tool_calls_refused", {"step": step + 1,
+                            "count": len(response["tool_calls"])})
+                if step == self.spec.budgets.model_steps - 1:
+                    return self.research_fallback("Model continued requesting tools in reporting phase")
+                continue
             if diagnostics.get("finish_reason") == "length":
                 self.recover_response("Provider response reached its output token limit (finish_reason=length)")
                 continue
@@ -181,6 +238,19 @@ class AgentSession:
                 "role": "assistant",
                 "content": self.workspace.redact(response.get("content") or ""),
             }
+            if finalizing and not calls:
+                try:
+                    value = json.loads(assistant["content"])
+                    if (not isinstance(value, dict) or value.get("outcome") not in
+                            {"completed", "partial", "blocked"}
+                            or not isinstance(value.get("evidence"), list)
+                            or not isinstance(value.get("limitations"), list)):
+                        raise ValueError("Missing required research report fields")
+                except (ValueError, TypeError):
+                    self.record("research_invalid_final", {"step": step + 1})
+                    if step == self.spec.budgets.model_steps - 1:
+                        return self.research_fallback("Model did not produce valid final JSON")
+                    continue
             if not calls and not assistant["content"].strip():
                 self.recover_response("Model returned neither tool calls nor a final report")
                 continue
@@ -302,4 +372,6 @@ class AgentSession:
                         )
                     raise TaskBlocked(self.tasks.blocked)
                 self.observe(name, call_id, observation)
+        if research:
+            return self.research_fallback("Assignment model step budget reached")
         raise RuntimeError("Assignment model step budget reached")
