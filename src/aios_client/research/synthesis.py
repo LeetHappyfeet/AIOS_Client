@@ -108,6 +108,17 @@ def merge_research_report(spec, tools, report):
                   "library-wide absence of relevant material is not established.")
         if caveat not in data["limitations"]:
             data["limitations"].append(caveat)
+        # Do not publish a categorical whole-library negative from failed probes.
+        summary = str(data.get("summary") or "")
+        if any(phrase in summary.casefold() for phrase in (
+            "does not contain", "no relevant books exist", "library lacks",
+            "library does not have", "no material exists",
+        )):
+            data["summary"] = (
+                "The retrieved passages did not establish the requested findings. "
+                "Some source searches were unsuccessful or unattempted; "
+                "whole-library coverage remains unknown."
+            )
         if data["outcome"] == "completed":
             data["outcome"] = "partial"
     return json.dumps(data, ensure_ascii=False)
