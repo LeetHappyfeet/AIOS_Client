@@ -10,6 +10,7 @@ import os
 import tempfile
 import threading
 from pathlib import Path
+from xml.etree import ElementTree
 
 import httpx
 from .sources import ResearchSource, SourceFile
@@ -149,7 +150,6 @@ def test_source(raw: dict, *, transport=None) -> dict:
         else:
             if "xml" not in media and "atom" not in media:
                 return {"ok": False, "source_id": source.id, "reason": "not_opds"}
-            from xml.etree import ElementTree
             root = ElementTree.fromstring(content)
             valid = root.tag in ("{http://www.w3.org/2005/Atom}feed",
                                  "{http://www.w3.org/2005/Atom}entry")
@@ -157,6 +157,6 @@ def test_source(raw: dict, *, transport=None) -> dict:
                 "status_code": 200, "reason": "connected" if valid else "invalid_response"}
     except (httpx.HTTPError, OSError, TimeoutError):
         return {"ok": False, "source_id": source.id, "reason": "connection_failed"}
-    except (ValueError, UnicodeError):
+    except (ElementTree.ParseError, ValueError, UnicodeError):
         # Never reflect response text or target host credentials in errors.
         return {"ok": False, "source_id": source.id, "reason": "invalid_response"}
