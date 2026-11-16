@@ -173,6 +173,10 @@ class AgentSession:
                 budget = self.workspace.research_tools.control
                 unread = getattr(self.workspace.research_tools,
                                  "recommended_unread", lambda: None)()
+                if unread is not None:
+                    # Expose the exact run-scoped evidence ID even after the
+                    # discovery tool result has been compacted away.
+                    self.context.state["recommended_unread_evidence"] = unread
                 can_read_candidate = (
                     unread is not None
                     and budget.acquisitions < budget.max_acquisitions
@@ -194,7 +198,6 @@ class AgentSession:
                         "Use only observed evidence receipts; do not invent findings. "
                         "If evidence is insufficient, report partial or blocked."})
                 else:
-                    unread = getattr(self.workspace.research_tools, "recommended_unread", lambda: None)()
                     self.context.state["research_phase"] = (
                         "evaluate_candidate" if unread and budget.searches >= 2 else "collect"
                     )
