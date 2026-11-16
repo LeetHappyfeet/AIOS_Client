@@ -92,3 +92,17 @@ def test_report_symlink_is_not_followed(tmp_path):
     (tmp_path / NAME).symlink_to(target)
     assert materialize_research_report(make_workspace(tmp_path), make_spec(), REPORT) == []
     assert target.read_text() == "do not change"
+
+
+def test_finalized_report_uses_authoritative_assignment_objective(tmp_path):
+    spec = make_spec()
+    spec.objective = "Research Pleistocene glaciation using only authorised Calibre"
+    claim = json.dumps({
+        "objective": "Different task inserted by model",
+        "outcome": "partial", "evidence": [],
+        "limitations": ["Search returned HTTP 404"],
+    })
+    assert materialize_research_report(make_workspace(tmp_path), spec, claim) == [NAME]
+    on_disk = json.loads((tmp_path / NAME).read_text())
+    assert on_disk["objective"] == spec.objective
+    assert on_disk["outcome"] == "partial"
