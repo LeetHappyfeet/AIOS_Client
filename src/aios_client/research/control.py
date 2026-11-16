@@ -19,6 +19,8 @@ class ResearchControl:
     passages: int = 0
     failed_acquisitions: int = 0
     verified_passages: list = field(default_factory=list)
+    queries: list = field(default_factory=list)
+    candidates: list = field(default_factory=list)
     blocked_operations: int = 0
 
     def allowed(self, operation: str) -> bool:
@@ -41,4 +43,6 @@ class ResearchControl:
             "max_failed_acquisitions": self.max_failed_acquisitions,
             "blocked_operations": self.blocked_operations,
             "verified_passages": self.verified_passages[-12:],
+            "queries": self.queries[-8:],
+            "candidates": self.candidates[-12:],
         }
