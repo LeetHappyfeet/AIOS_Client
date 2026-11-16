@@ -51,7 +51,10 @@ def test_bad_config_and_grant_safety(tmp_path):
     with pytest.raises(ValueError, match="granted"):
         update_source(path, source={**SEARCH, "enabled": False},
                       granted_ids={"search"})
-    write_registry(path, {"version": 1, "sources": [SEARCH]})
+    write_registry(path, {"version": 1, "sources": [SEARCH, LIBRARY]})
+    with pytest.raises(ValueError, match="already uses"):
+        update_source(path, source={**SEARCH, "id": "library"},
+                      previous_id="search")
     with pytest.raises(ValueError, match="granted"):
         update_source(path, delete_id="search", granted_ids={"search"})
     with pytest.raises(ValueError, match="granted"):
