@@ -193,9 +193,11 @@ class AgentSession:
                 )
                 # Running out of SEARCHES must not prevent a last useful READ.
                 # The reserved reporting steps and other budgets still win.
+                unread_target = getattr(self.workspace.research_tools,
+                                        "has_unread_passage_targets", lambda: False)()
                 finalizing = (step >= step_limit - report_steps
                               or (budget.searches >= budget.max_searches
-                                  and not can_read_candidate)
+                                  and not can_read_candidate and not unread_target)
                               or budget.passages >= budget.max_passages
                               or budget.failed_acquisitions >= budget.max_failed_acquisitions)
                 if finalizing:
@@ -399,7 +401,11 @@ class AgentSession:
                     {
                         "role": "tool",
                         "tool_call_id": call_id,
-                        "content": json.dumps(observation),
+                        "content": json.dumps(
+                            {key: value for key, value in observation.items()
+                             if key != "research_progress"}
+                            if research and name.startswith("research_") else observation
+                        ),
                     }
                 )
                 self.checkpoint()

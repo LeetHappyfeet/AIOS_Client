@@ -14,6 +14,8 @@ class ResearchControl:
     max_acquisitions: int = 6
     max_passages: int = 12
     max_failed_acquisitions: int = 4
+    max_passage_scans: int = 4
+    passage_scans: int = 0
     searches: int = 0
     acquisitions: int = 0
     passages: int = 0
@@ -29,6 +31,7 @@ class ResearchControl:
             "acquisition": self.acquisitions < self.max_acquisitions
                            and self.failed_acquisitions < self.max_failed_acquisitions,
             "passage": self.passages < self.max_passages,
+            "passage_scan": self.passage_scans < self.max_passage_scans,
         }[operation]
         if not allowed:
             self.blocked_operations += 1
@@ -37,6 +40,7 @@ class ResearchControl:
     def snapshot(self) -> dict:
         return {
             "searches": self.searches, "max_searches": self.max_searches,
+            "passage_scans": self.passage_scans, "max_passage_scans": self.max_passage_scans,
             "acquisitions": self.acquisitions, "max_acquisitions": self.max_acquisitions,
             "passages": self.passages, "max_passages": self.max_passages,
             "failed_acquisitions": self.failed_acquisitions,

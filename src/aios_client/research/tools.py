@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import json
 import os
+import re
 import time
 from pathlib import Path
 from typing import Annotated
@@ -39,6 +40,8 @@ class ResearchTools:
         self.document_cache = {}  # authorized acquisition URL -> bounded extracted sections
         self.read_cache = {}  # exact passage request -> tool response
         self.source_failures = {}
+        self.passage_targets = {}  # (evidence, section index, cursor) -> match score
+        self.scanned_books = set()
         self.search_audit = []  # bounded, operator-authoritative tool outcomes
         self.calibre_search_probes = {}  # source ID -> root/search advertisement diagnostics
 
@@ -347,6 +350,10 @@ class ResearchTools:
             "engine_failures": dict(response.get("engine_failures") or {}),
             "attempted_sources": list(response.get("attempted_sources") or []),
             "result_count": len(response.get("results") or []),
+            **{key: response[key] for key in ("search_mode", "query_scope", "full_text_error")
+               if response.get(key)},
+            **({"error_details": response["error_details"]}
+               if response.get("error_details") else {}),
         })
         self.search_audit = self.search_audit[-20:]
         return response
@@ -362,7 +369,7 @@ class ResearchTools:
             if source_id is not None and item["source_id"] != source_id:
                 continue
             acquisition = entry["internal"].get("acquisition")
-            if entry.get("read") is not None or not acquisition:
+            if entry.get("read") is not None or evidence_id in self.scanned_books or not acquisition:
                 continue
             # Failed and oversized acquisitions are not recommended again.
             if acquisition["url"] in self.document_cache and self.document_cache[
@@ -484,6 +491,110 @@ class ResearchTools:
         response["research_progress"] = self.control.snapshot()
         return self._audit_search(query, source_id, response)
 
+    def _calibre_document(self, source, acquisition):
+        if canonical_origin(acquisition["url"]) != canonical_origin(source.endpoint):
+            return {"error": "acquisition_origin_rejected"}, False
+        acquisition_key = acquisition["url"]
+        was_cached = acquisition_key in self.document_cache
+        if not was_cached:
+            if not self.control.allowed("acquisition"):
+                return {"error": "research_acquisition_limit"}, False
+            self.control.acquisitions += 1
+            data, content_type, error = self._get(
+                acquisition_key, max_bytes=source.max_document_bytes,
+                accept="application/pdf, application/epub+zip")
+            if error:
+                self.control.failed_acquisitions += 1
+                self.document_cache[acquisition_key] = {"error": error}
+            else:
+                sections, limitations = extract_document(
+                    data, acquisition["kind"], max_bytes=source.max_document_bytes)
+                self.document_cache[acquisition_key] = {
+                    "sections": sections, "limitations": limitations,
+                    "sha256": digest(data),
+                    "error": "no_text" if not sections else None,
+                }
+                if not sections:
+                    self.control.failed_acquisitions += 1
+        return self.document_cache[acquisition_key], was_cached
+
+    def research_find_passages(
+        self,
+        source_id: Annotated[str, Field(max_length=64)],
+        evidence_ids: Annotated[list[str], Field(min_length=1, max_length=4)],
+        phrases: Annotated[list[Annotated[str, Field(min_length=2, max_length=80)]],
+                           Field(min_length=1, max_length=8)],
+        limit: Annotated[int, Field(ge=1, le=8)] = 5,
+    ):
+        """Rank short text windows from authorized books without spending passage reads."""
+        self.workspace.guard()
+        source = self.sources.get(source_id)
+        if source is None or source.adapter != "calibre_opds":
+            raise ValueError("An authorized Calibre source is required")
+        books = [(key, self.evidence.get(key)) for key in dict.fromkeys(evidence_ids)]
+        if any(entry is None or entry["public"]["source_id"] != source_id
+               or entry["public"]["kind"] != "calibre_book" for _, entry in books):
+            raise ValueError("All evidence IDs must belong to the selected Calibre source")
+        normalized = list(dict.fromkeys(" ".join(phrase.casefold().split()) for phrase in phrases))
+        if any(len(phrase) < 2 for phrase in normalized):
+            raise ValueError("Search phrases must contain at least two characters")
+        if self._contains_secret(" ".join(phrases)):
+            raise ValueError("Search phrases contain a configured credential")
+        if not self.control.allowed("passage_scan"):
+            return {"status": "passage_scan_limit", "matches": []}
+        self.control.passage_scans += 1
+        patterns = [
+            re.compile(r"(?<!\w)" + r"\s+".join(map(re.escape, phrase.split())) + r"(?!\w)",
+                       re.IGNORECASE)
+            for phrase in normalized
+        ]
+        hits, coverage = [], []
+        for key, entry in books:
+            self.workspace.guard()
+            acquisition = entry["internal"].get("acquisition")
+            document, _ = (self._calibre_document(source, acquisition) if acquisition
+                           else ({"error": "no_supported_acquisition"}, False))
+            sections = document.get("sections", [])
+            details = {"evidence_id": key, "title": entry["public"]["title"],
+                       "searchable_sections": len(sections),
+                       "limitations": document.get("limitations", [])}
+            if document.get("error"):
+                details["error"] = document["error"]
+            coverage.append(details)
+            self.scanned_books.add(key)
+            for index, (section, raw_text) in enumerate(sections):
+                self.workspace.guard()
+                content = self.workspace.redact(raw_text)
+                anchors = [match for pattern in patterns
+                           if (match := pattern.search(content))]
+                if not anchors:
+                    continue
+                # Prefer windows with multiple distinct phrases close together.
+                def window(match):
+                    cursor = max(0, match.start() - 80)
+                    return cursor, content[cursor:cursor + 320]
+
+                cursor, snippet = max(
+                    map(window, anchors),
+                    key=lambda pair: sum(bool(pattern.search(pair[1])) for pattern in patterns))
+                score = sum(bool(pattern.search(snippet)) for pattern in patterns)
+                hits.append((score, {"evidence_id": key, "section": section,
+                                     "section_index": index, "cursor": cursor,
+                                     "snippet": snippet}))
+        hits.sort(key=lambda item: item[0], reverse=True)
+        matches = []
+        for score, hit in hits[:limit]:
+            target = (hit["evidence_id"], hit["section_index"], hit["cursor"])
+            self.passage_targets[target] = max(score, self.passage_targets.get(target, 0))
+            matches.append(hit)
+        return {"status": "ok", "source_id": source_id,
+                "matches": matches, "coverage": coverage}
+
+    def has_unread_passage_targets(self):
+        read_targets = {(evidence_id, index, cursor)
+                        for evidence_id, cursor, _, index in self.read_cache}
+        return any(target not in read_targets for target in self.passage_targets)
+
     def research_read(
         self,
         evidence_id: Annotated[str, Field(pattern=r"^[a-f0-9]{24}$")],
@@ -557,32 +668,7 @@ class ResearchTools:
             if not acquisition:
                 return {"evidence": item, "full_document_retrieved": False,
                         "note": "Catalog metadata only; no supported acquisition link."}
-            if canonical_origin(acquisition["url"]) != canonical_origin(source.endpoint):
-                return {"evidence": item, "error": "acquisition_origin_rejected"}
-            acquisition_key = acquisition["url"]
-            was_cached = acquisition_key in self.document_cache
-            if not was_cached:
-                if not self.control.allowed("acquisition"):
-                    return {"evidence": item, "error": "research_acquisition_limit",
-                            "research_progress": self.control.snapshot()}
-                self.control.acquisitions += 1
-                data, content_type, error = self._get(
-                    acquisition_key, max_bytes=source.max_document_bytes,
-                    accept="application/pdf, application/epub+zip")
-                if error:
-                    self.control.failed_acquisitions += 1
-                    self.document_cache[acquisition_key] = {"error": error}
-                else:
-                    sections, limitations = extract_document(
-                        data, acquisition["kind"], max_bytes=source.max_document_bytes)
-                    self.document_cache[acquisition_key] = {
-                        "sections": sections, "limitations": limitations,
-                        "sha256": digest(data),
-                        "error": "no_text" if not sections else None,
-                    }
-                    if not sections:
-                        self.control.failed_acquisitions += 1
-            document = self.document_cache[acquisition_key]
+            document, was_cached = self._calibre_document(source, acquisition)
             if document.get("error"):
                 return {"evidence": item, "error": document["error"],
                         "limitations": document.get("limitations", []),
@@ -643,6 +729,9 @@ class ResearchTools:
                      "source_id": item["source_id"],
                      # A short, redacted passage anchor, never the whole document.
                      "passage_excerpt": part[:240]}
+        match_score = self.passage_targets.get((evidence_id, section_index, cursor))
+        if match_score:
+            reference["match_score"] = match_score
         if reference not in self.control.verified_passages:
             self.control.verified_passages.append(reference)
         response["research_progress"] = self.control.snapshot()
@@ -679,6 +768,10 @@ def register(registry, tools):
     registry.add("research_search", tools.research_search,
                  "Search approved sources; returned links are never fetch authority.",
                  "research.read", effect="read")
+    if any(source.adapter == "calibre_opds" for source in tools.sources.values()):
+        registry.add("research_find_passages", tools.research_find_passages,
+                     "Find matching text windows in up to four Calibre books. Read a hit to cite it.",
+                     "research.read", effect="read")
     registry.add("research_read", tools.research_read,
                  "Read bounded document passages by evidence ID. External pages require operator-approved origins.",
                  "research.read", effect="read")

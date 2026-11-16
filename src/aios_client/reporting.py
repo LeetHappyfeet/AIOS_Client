@@ -226,6 +226,7 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                 retained.append(item)
             result["research_progress"] = {
                 "searches": progress.get("searches", 0),
+                "passage_scans": progress.get("passage_scans", 0),
                 "acquisitions": progress.get("acquisitions", 0),
                 "passages": progress.get("passages", 0),
                 "failed_acquisitions": progress.get("failed_acquisitions", 0),
@@ -240,7 +241,8 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
         search_log = value.get("search_log")
         if isinstance(search_log, list):
             result["search_log"] = [
-                {**shallow(item, ("query", "source_id", "status", "result_count"), 120),
+                {**shallow(item, ("query", "source_id", "status", "result_count",
+                                  "search_mode", "query_scope", "full_text_error"), 120),
                  "errors": {str(k)[:64]: text(v, 80) for k,v in item.get("errors", {}).items()}
                  if isinstance(item.get("errors"), dict) else {}}
                 for item in search_log[-12:] if isinstance(item, dict)

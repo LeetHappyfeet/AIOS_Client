@@ -42,10 +42,13 @@ MEMORY_GUIDANCE = (
 RESEARCH_GUIDANCE = """
 RESEARCH EVIDENCE DISCIPLINE:
 Use research_sources to discover allowed sources and research_search to find candidates.
+For Calibre, use research_find_passages on promising books to locate exact phrases and
+nearby terms across pages in one call. Read promising hits with their section_index
+and cursor. Choose phrases specific to the assignment and keep the authorized source ID.
 Search snippets are discovery hints, not verified source passages. Use research_read
 before citing; research_evidence confirms the retrieval receipt.
 When research_search returns read_recommended, open that evidence_id with
-research_read before further searching; a title is not a finding.
+research_find_passages or research_read before further catalog searching; a title is not a finding.
 When search reports source_unhealthy, avoid repeated compound expressions;
 try a short keyword if budget permits, or report the connection limitation.
 A catalogue hit with readable=false has no supported PDF/EPUB acquisition;

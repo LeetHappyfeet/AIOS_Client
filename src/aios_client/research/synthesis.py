@@ -13,9 +13,12 @@ def _verified_passages(tools, limit=8):
     unique = {}
     for item in tools.control.verified_passages:
         key = (item.get("evidence_id"), item.get("section"))
-        if key[0] and key[1]:
+        if key[0] and key[1] and item.get("match_score", 0) >= unique.get(
+                key, {}).get("match_score", 0):
             unique[key] = item
-    return list(unique.values())[-limit:]
+    ranked = sorted(reversed(list(unique.values())),
+                    key=lambda item: item.get("match_score", 0), reverse=True)
+    return ranked[:limit]
 
 
 def compact_synthesis_messages(spec, tools):
@@ -38,12 +41,15 @@ def compact_synthesis_messages(spec, tools):
         "attempted_acquisitions": tools.control.acquisitions,
         "unread_candidates": [
             {"title": x.get("title"), "source_id": x.get("source_id")}
-            for x in tools.control.candidates[-8:] if x.get("readable")
+            for x in tools.control.candidates[-8:]
+            if x.get("readable") and x.get("evidence_id") not in {
+                passage.get("evidence_id") for passage in tools.control.verified_passages
+            }
         ][:5],
     }
     instruction = (
         "Return ONLY a compact JSON object with: outcome (completed,partial,blocked),"
-        " summary (at most 300 characters), findings (at most 3 objects with"
+        " summary (at most 300 characters), findings (at most 5 objects with"
         " observation, interpretation, evidence_id, source_id, section),"
         " evidence (brief list), and limitations (at most 5 short strings)."
         " Cite only provided passage IDs and sections; do not quote whole pages."
@@ -104,7 +110,11 @@ def merge_research_report(spec, tools, report):
     incomplete_statuses = {"source_error", "source_unhealthy", "partial_results", "query_rejected"}
     unresolved = any(row.get("status") in incomplete_statuses or row.get("errors")
                      for row in data["search_log"])
-    if unresolved:
+    incomplete_coverage = unresolved or any(
+        row.get("status") == "read_recommended" or row.get("full_text_error")
+        for row in data["search_log"]
+    )
+    if incomplete_coverage:
         caveat = ("Some research searches failed, were skipped, or had incomplete coverage. "
                   "Absence of relevant material is not established.")
         if caveat not in data["limitations"]:
@@ -120,6 +130,6 @@ def merge_research_report(spec, tools, report):
                 "Some source searches were unsuccessful or unattempted; "
                 "whole-library coverage remains unknown."
             )
-        if data["outcome"] == "completed":
+        if unresolved and data["outcome"] == "completed":
             data["outcome"] = "partial"
     return json.dumps(data, ensure_ascii=False)

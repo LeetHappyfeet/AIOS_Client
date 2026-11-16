@@ -499,3 +499,45 @@ def test_calibre_configurable_larger_document_download(monkeypatch):
     result = tool.research_read(search["results"][0]["evidence_id"])
     assert result["text"] == "Ice flow observations"
     assert seen_limits == [(7 * 1024 * 1024, 12 * 1024 * 1024)]
+
+
+def test_find_calibre_passages_ranks_books_and_reuses_document(monkeypatch):
+    feed = FEED.replace("</feed>", FEED[FEED.index("<entry>"):FEED.index("</feed>")]
+                        .replace("urn:uuid:one", "urn:uuid:two")
+                        .replace("Glacial Geology of Michigan", "Quaternary")
+                        .replace("/book.pdf", "/second.pdf") + "</feed>")
+    downloads = []
+
+    def serve(request):
+        if "/search/" in request.url.path:
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=feed)
+        downloads.append(request.url.path)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=request.url.path.encode())
+
+    def extract(data, kind, **kwargs):
+        if data == b"/book.pdf":
+            return [("page:1", "Great Lakes bibliography")], ["page_limit"]
+        return [("page:7", "Front matter. " * 230 + "Great\nLakes Laurentide till.")], []
+
+    monkeypatch.setattr("aios_client.research.tools.extract_document", extract)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    books = tool.research_search("glacier", "calibre")["results"]
+    ids = [book["evidence_id"] for book in books]
+    found = tool.research_find_passages("calibre", ids, ["Great Lakes", "Laurentide"])
+    hit = found["matches"][0]
+    assert hit["evidence_id"] == ids[1]
+    assert hit["section"] == "page:7"
+    assert "Great\nLakes Laurentide till" in hit["snippet"]
+    assert found["coverage"][0]["limitations"] == ["page_limit"]
+    assert tool.control.passages == 0
+    assert tool.control.passage_scans == 1
+    assert not tool.control.verified_passages
+    assert tool.has_unread_passage_targets()
+    read = tool.research_read(hit["evidence_id"], cursor=hit["cursor"],
+                              section_index=hit["section_index"])
+    assert "Great\nLakes Laurentide till" in read["text"]
+    assert tool.control.verified_passages[0]["match_score"] == 2
+    assert downloads == ["/book.pdf", "/second.pdf"]
+    assert tool.control.passages == 1
