@@ -36,6 +36,7 @@ class ResearchTools:
         self.document_cache = {}  # authorized acquisition URL -> bounded extracted sections
         self.read_cache = {}  # exact passage request -> tool response
         self.source_failures = {}
+        self.search_audit = []  # bounded, operator-authoritative tool outcomes
 
     def research_sources(self):
         return {"sources": [
@@ -279,6 +280,18 @@ class ResearchTools:
         return {"results": results, "search_mode": search_mode,
                 **({"full_text_error": first_error} if first_error else {})}
 
+    def _audit_search(self, query, source_id, response):
+        """Record exact statuses, not inferred absences; no query response bodies."""
+        self.search_audit.append({
+            "query": query[:120], "source_id": source_id or "automatic",
+            "status": response.get("status", "unknown"),
+            "errors": dict(response.get("errors") or {}),
+            "attempted_sources": list(response.get("attempted_sources") or []),
+            "result_count": len(response.get("results") or []),
+        })
+        self.search_audit = self.search_audit[-20:]
+        return response
+
     def recommended_unread(self, source_id=None):
         """Expose a potentially relevant retrievable book, never a verified finding."""
         terms = set()
@@ -325,20 +338,20 @@ class ResearchTools:
             return cached
         unread = self.recommended_unread(source_id)
         if unread and self.control.searches >= 2 and not self.control.verified_passages:
-            return {"status": "read_recommended", "results": [],
+            return self._audit_search(query, source_id, {"status": "read_recommended", "results": [],
                     "recommended_evidence": unread,
                     "reason": "Read the available relevant book before further searching",
-                    "research_progress": self.control.snapshot()}
+                    "research_progress": self.control.snapshot()})
         # Avoid spending the remaining budget on known-bad compound syntax.
         # Single-word recovery probes remain available within the same budget.
         selected = ([source_id] if source_id else list(self.sources))
         unhealthy = [sid for sid in selected if self.source_failures.get(sid, 0) >= 3]
         if unhealthy and len(query.split()) > 1:
-            return {"status": "source_unhealthy", "results": [],
+            return self._audit_search(query, source_id, {"status": "source_unhealthy", "results": [],
                     "attempted_sources": [],
                     "reason": "Repeated provider errors; try one short keyword",
                     "source_ids": unhealthy,
-                    "research_progress": self.control.snapshot()}
+                    "research_progress": self.control.snapshot()})
         if not self.control.allowed("search"):
             return {"status": "budget_exhausted", "results": [],
                     "reason": "research_search_limit", "research_progress": self.control.snapshot()}
@@ -394,7 +407,7 @@ class ResearchTools:
         response["source_health"] = {sid: {"consecutive_failures": failures}
                                      for sid, failures in self.source_failures.items()}
         response["research_progress"] = self.control.snapshot()
-        return response
+        return self._audit_search(query, source_id, response)
 
     def research_read(
         self,
@@ -464,13 +477,14 @@ class ResearchTools:
                             "research_progress": self.control.snapshot()}
                 self.control.acquisitions += 1
                 data, content_type, error = self._get(
-                    acquisition_key, max_bytes=MAX_DOCUMENT,
+                    acquisition_key, max_bytes=source.max_document_bytes,
                     accept="application/pdf, application/epub+zip")
                 if error:
                     self.control.failed_acquisitions += 1
                     self.document_cache[acquisition_key] = {"error": error}
                 else:
-                    sections, limitations = extract_document(data, acquisition["kind"])
+                    sections, limitations = extract_document(
+                        data, acquisition["kind"], max_bytes=source.max_document_bytes)
                     self.document_cache[acquisition_key] = {
                         "sections": sections, "limitations": limitations,
                         "sha256": digest(data),
@@ -483,7 +497,7 @@ class ResearchTools:
                 return {"evidence": item, "error": document["error"],
                         "limitations": document.get("limitations", []),
                         "cache_hit": was_cached,
-                        **({"limit_bytes": MAX_DOCUMENT}
+                        **({"limit_bytes": source.max_document_bytes}
                            if document["error"] == "response_too_large" else {})}
             sections = document["sections"]
             limitations = document["limitations"]
