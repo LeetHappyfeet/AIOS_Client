@@ -326,6 +326,8 @@ class ResearchTools:
             item["available_formats"] = formats[:8]
             results.append(item)
         return {"results": results, "search_mode": search_mode,
+                **({"query_scope": "broad_keyword_fallback"}
+                   if search_mode == "metadata_broad" else {}),
                 **({"full_text_error": first_error} if first_error else {})}
 
     def _audit_search(self, query, source_id, response):
@@ -428,6 +430,8 @@ class ResearchTools:
                 details[source.id] = {
                     "full_text_error": found.get("full_text_error"),
                     "final_search_error": found["error"],
+                    **({"opds_search_probe": found["opds_search_probe"]}
+                       if found.get("opds_search_probe") else {}),
                 }
         if result is None:
             result = {"status": "source_error" if errors else "no_results",
