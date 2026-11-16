@@ -283,6 +283,8 @@ class ResearchTools:
             return {"status": "budget_exhausted", "results": [],
                     "reason": "research_search_limit", "research_progress": self.control.snapshot()}
         self.control.searches += 1
+        self.control.queries.append({"source_id": source_id or "auto",
+                                     "query": key[1][:120]})
         options = ([self.sources[source_id]] if source_id else
                    sorted(self.sources.values(), key=lambda s: (s.priority, s.id)))
         attempted, errors = [], {}
@@ -306,6 +308,14 @@ class ResearchTools:
             result = {"status": "source_error" if errors else "no_results",
                       "results": [], "attempted_sources": attempted, "errors": errors}
         self.search_cache[key] = result
+        for hit in result.get("results", [])[:4]:
+            candidate = {"evidence_id": hit["evidence_id"],
+                         "title": hit.get("title", "")[:100],
+                         "source_id": hit["source_id"],
+                         "status": "discovery_only"}
+            if candidate not in self.control.candidates:
+                self.control.candidates.append(candidate)
+        self.control.candidates = self.control.candidates[-12:]
         response = result.copy()
         response["results"] = response["results"][:limit]
         response["research_progress"] = self.control.snapshot()
@@ -434,7 +444,11 @@ class ResearchTools:
                 "research_progress": self.control.snapshot()}
         self.read_cache[cache_key] = response
         reference = {"evidence_id": evidence_id, "section": section,
-                     "document_sha256": document_hash}
+                     "document_sha256": document_hash,
+                     "title": item.get("title", "")[:150],
+                     "source_id": item["source_id"],
+                     # A short, redacted passage anchor, never the whole document.
+                     "passage_excerpt": part[:240]}
         if reference not in self.control.verified_passages:
             self.control.verified_passages.append(reference)
         response["research_progress"] = self.control.snapshot()
