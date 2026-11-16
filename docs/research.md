@@ -366,3 +366,55 @@ required for this fix. The feature relies on the existing AIOS claim cleanup
 and must be verified with a real Automatic listener after deployment.
 
 Regression test: `pytest -q tests/test_journal_expired_lease_recovery.py`.
+
+
+## Research execution control v2: Calibre and required report artifacts
+
+The 2026-11-16 glaciation trial showed six `http_status` search failures, an
+unopened on-topic catalog candidate, and a valid partial model report that
+failed immutable checks because its explicitly required JSON file was missing.
+
+The Calibre adapter now uses Calibre's **quoted metadata expression** for
+multiword metadata fallback, while leaving the original query for `full_text=y`
+(SQLite FTS). HTTP failures include numeric status codes such as
+`http_status_404`; `error_details` distinguishes full-text failure from the
+final metadata failure without exposing response bodies or user credentials.
+Search responses also expose bounded source-health counts. After three
+consecutive source errors, new compound queries return `source_unhealthy`
+without spending another search allowance, but a shorter one-word recovery
+probe can still be attempted. Source errors are not interpreted as an empty
+library. Metadata fallback and retrieval remain restricted to the configured
+operator-approved Calibre origin.
+
+An unopened, title-matching book with an approved PDF/EPUB acquisition link
+can now trigger `read_recommended` before another broad search. The model sees
+the evidence ID and source title; discovery is **not** a verified finding.
+Source records indicate `readable`, supported `available_formats`, and the
+book author where advertised. Failed acquisitions are not repeatedly
+recommended. Reaching the **search** limit no longer blocks an already
+discovered candidate from being read, provided passage/acquisition budgets
+remain and the reserved final reporting steps have not started.
+
+Research-only finalization still prevents further evidence searches during the
+reserved synthesis steps. For an assignment that explicitly expects a missing,
+root-level `aios-experiment-UUID.json` file, the **host** may materialize the
+worker's valid final JSON report just before its immutable verification checks.
+The report must supply a nonempty objective, an outcome of
+`completed`/`partial`/`blocked`, and evidence and limitations lists.
+This does not execute arbitrary model-provided commands, does not overwrite
+existing files or follow symlinks, and is prohibited for inspection-only work.
+It does not claim that the research findings are verified. The materialization
+is recorded as `research_report_materialized` in the local journal.
+
+Run focused tests with:
+
+```bash
+python3 -m pytest -q tests/test_research_execution_control.py \
+  tests/test_research_report_finalization.py \
+  tests/test_journal_expired_lease_recovery.py
+```
+
+A new live Calibre trial should compare query statuses, whether a retrievable
+book is actually opened, verified passage counts, and both the final report's
+outcome and immutable output/check results. A valid *partial* report may pass
+the structural file check without constituting research success.
