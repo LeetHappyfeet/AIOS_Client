@@ -50,6 +50,7 @@ def test_search_dedup_and_calibre_acquisition_cache(monkeypatch):
     assert first["status"] == "ok"
     assert first["search_mode"] == "full_text"
     assert first["results"][0]["readable"] is True
+    assert first["results"][0]["author"] == "Scientist"
     assert "application/pdf" in first["results"][0]["available_formats"]
     repeated = tool.research_search("  GLACIER  ", "calibre", limit=10)
     assert repeated["cache_hit"] is True
@@ -302,6 +303,7 @@ def test_recommended_candidate_takes_priority_over_next_search():
     third = tool.research_search("varves", "calibre")
     assert third["status"] == "read_recommended"
     assert third["recommended_evidence"]["title"] == "Glacial Geology of Michigan"
+    assert third["recommended_evidence"]["author"] == "Scientist"
     assert tool.control.searches == 2
     assert third["recommended_evidence"]["content_scope"] == "search_excerpt_only"
 
