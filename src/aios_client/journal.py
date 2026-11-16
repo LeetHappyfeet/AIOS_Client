@@ -4,9 +4,32 @@ import json
 import sqlite3
 import threading
 import time
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from .http import APIError
+
+
+def _expired_unfinished_run(remote):
+    """True only for a server-confirmed running run with a safely expired lease.
+
+    This does not authorize a new run or mark any report delivered. A subsequent
+    normal workspace claim is responsible for the server's authoritative
+    expiration transition. Ambiguous responses continue to fail closed.
+    """
+    if not isinstance(remote, dict) or remote.get("status") != "running":
+        return False
+    raw = remote.get("lease_expires_at")
+    if not isinstance(raw, str):
+        return False
+    try:
+        expires = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expires.tzinfo is None:
+        return False
+    # Leave slack for server/client clock skew and a just-expired lease.
+    return expires <= datetime.now(timezone.utc) - timedelta(seconds=60)
 
 
 class Journal:
@@ -224,6 +247,16 @@ class Journal:
                     "finished",
                 }
                 if not terminal and (is_finish or not remote.get("cancel_requested")):
+                    if _expired_unfinished_run(remote):
+                        # Normal claims on AIOS atomically interrupt expired runs.
+                        # Do not let the stale progress notification prevent that
+                        # claim. Leave BOTH notifications durable for a later flush,
+                        # after AIOS confirms a terminal state.
+                        self.event(run, "delivery_deferred", {
+                            "path": path, "reason": "remote_run_lease_expired",
+                            "remote_status": remote["status"],
+                        })
+                        continue
                     raise
                 reason = (
                     f"AIOS already closed the run as {remote['status']}"
