@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/hybrid-research-discovery-v1
+      - feature/calibre-synthesis-recovery-v2
     paths:
       - 'src/aios_client/**'
       - 'tests/test_research_*.py'
