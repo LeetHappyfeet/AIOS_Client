@@ -24,6 +24,7 @@ from .protocol import negotiate
 from .reporting import result_summary, stage_memory
 from .research.sources import load_sources
 from .research.bridge import register as register_research_bridge
+from .research.finalize import materialize_research_report
 from .tools.recall import RemoteTools
 from .verification import bounded_text, snapshot, verify
 from .workspace import Workspace
@@ -93,6 +94,7 @@ Use host_info before assuming an OS or shell. argv avoids shell quoting; stdin i
 Use inspect_path for filesystem diagnostics and search_process_output/process_output_summary to inspect noisy command logs.
 HTTP probes only reach the operator-enabled http_origins from host_info; no redirects or credential forwarding.
 Use publish_result to select substantive findings and actual file excerpts for AIOS before finishing.
+For research assignments, finalize with JSON containing objective, outcome, evidence, and limitations. If the assignment expects a root-level aios-experiment-UUID.json file, the host may create that exact missing file from your final JSON before verification; do not claim it was written yourself unless verified.
 Publication is staged until the final report, not immediately delivered or independent proof of task success.
 Working history can be compacted; use retained receipts and re-read files before editing stale content.
 Never claim a test passed without observing its exit status. There is no simulated terminal or world.
@@ -673,6 +675,13 @@ class Runner:
                     'current measurements, or goal completion. Read retained sections as needed.\n'
                     + json.dumps(brief)})
             report = session.run()
+            # A reporting-phase answer is not by itself an expected workspace file.
+            # Materialize only an explicitly required experiment JSON, before
+            # immutable host checks inspect the final workspace snapshot.
+            created_reports = materialize_research_report(workspace, spec, report)
+            if created_reports:
+                self.journal.event(rid, "research_report_materialized",
+                                   {"paths": created_reports, "source": "model_final_json"})
             progress(
                 "progress",
                 "Model work ended; running immutable assignment checks",
