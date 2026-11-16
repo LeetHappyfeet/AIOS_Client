@@ -439,3 +439,59 @@ research findings are true or complete.
 Regressions cover a relevant book appearing after six unrelated OPDS entries,
 preserved recommended-evidence IDs, and an attempted model replacement of
 the authorized assignment objective.
+
+
+## Research synthesis and Calibre download recovery (v2)
+
+The 2026-11-16 experiment reached the research output-token limit
+(`finish_reason=length`) in every reserved reporting step. AIOS-Client now
+supplies a **fresh, compact synthesis prompt** with a bounded list of
+passage excerpts and exact run-local search statuses. The model is instructed
+to return at most three concise findings, never the whole chat history.
+The host then attaches the original authorized objective, exact search ledger,
+budgets, and unavailable-coverage caveat. Findings without a matching
+retrieved evidence ID, source ID and section are omitted from the report.
+A finalization output-length truncation immediately produces a partial,
+auditable fallback rather than repeatedly spending more model steps.
+
+The Calibre OPDS adapter distinguishes full-text indexing from metadata
+search. If both search forms give 404, the client makes **one** bounded,
+non-following request to the operator-configured OPDS root to diagnose
+whether it advertises search, and tries one `all:keyword` metadata probe
+on the **same configured endpoint**. Such hits are explicitly labeled
+`metadata_broad` and `query_scope: broad_keyword_fallback`, **not**
+exact-phrase matches. HTTP 404 is an error/uncertainty, never `no_results`
+or proof that a library lacks a topic.
+
+Operator-configured Calibre source entries accept an optional
+`max_document_bytes` integer. Default: `12582912` (12 MiB), allowed
+range 1–24 MiB. For example:
+
+```json
+{
+  "id": "calibre",
+  "adapter": "calibre_opds",
+  "endpoint": "http://192.168.1.16/opds",
+  "max_document_bytes": 16777216
+}
+```
+
+These example settings supplement the other normal source fields. The limit
+applies to streamed acquisition, not to the model's passage size. No redirects
+or ambient HTTP credentials are used. PDF/EPUB extraction is bounded to
+80 sections and an aggregate 250,000 text characters. Cached oversized or
+unreadable acquisitions do not consume additional passage budget on retry.
+Larger documents can still fail to extract; these limits do not enable OCR.
+
+Focused regression commands:
+
+```bash
+python3 -m pytest -q tests/test_research_synthesis_v2.py \
+  tests/test_research_execution_control.py \
+  tests/test_research_source_setup.py \
+  tests/test_research_report_finalization.py
+```
+
+This patch does not establish a research finding solely by passing a JSON
+structure check. Live integration with the actual Calibre content server
+remains necessary before promoting it into development.
