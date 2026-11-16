@@ -74,6 +74,7 @@ cancel work. A finished run alone does not mean its checks passed.
 - [Credentials, logs, CLI commands, and verification](docs/client-reference.md)
 - [AIOS pairing and delegation](docs/v3-integration.md)
 - [Runtime tools and development](docs/coding-runtime.md)
+- [Research sources (SearXNG, Calibre and local files)](docs/research.md)
 
 ### New chats without manual pairing
 
