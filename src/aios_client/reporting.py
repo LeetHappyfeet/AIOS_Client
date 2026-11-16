@@ -198,6 +198,53 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
         "source": source,
         "source_sha256": source_hash,
     }
+    # Retain just enough run-local research observations for a character to
+    # inspect a partial or truncated report without requesting new execution.
+    # These are worker-supplied excerpts, never verified scientific findings.
+    if getattr(workspace.registry, "tool_mode", None) == "research":
+        def shallow(value, keys, max_len=240):
+            if not isinstance(value, dict):
+                return {}
+            return {key: text(value[key], max_len) if isinstance(value.get(key), str)
+                    else value[key]
+                    for key in keys if isinstance(value.get(key), (str, int, float, bool))}
+        progress = value.get("research_progress")
+        progress = progress if isinstance(progress, dict) else {}
+        passages = progress.get("verified_passages")
+        if isinstance(passages, list):
+            retained, seen = [], set()
+            for passage in passages:
+                if not isinstance(passage, dict):
+                    continue
+                pair = (passage.get("evidence_id"), passage.get("section"))
+                if not all(isinstance(x, str) for x in pair) or pair in seen:
+                    continue
+                seen.add(pair)
+                item = shallow(passage, ("evidence_id", "source_id", "title",
+                                        "section", "document_sha256"))
+                item["passage_excerpt"] = text(passage.get("passage_excerpt"), 280)
+                retained.append(item)
+            result["research_progress"] = {
+                "searches": progress.get("searches", 0),
+                "acquisitions": progress.get("acquisitions", 0),
+                "passages": progress.get("passages", 0),
+                "failed_acquisitions": progress.get("failed_acquisitions", 0),
+                "verified_passages": retained[-8:],
+            }
+        if isinstance(value.get("evidence"), list):
+            result["evidence"] = [
+                shallow(item, ("evidence_id", "source_id", "title", "author",
+                               "section", "note"), 240)
+                for item in value["evidence"][:8] if isinstance(item, dict)
+            ]
+        search_log = value.get("search_log")
+        if isinstance(search_log, list):
+            result["search_log"] = [
+                {**shallow(item, ("query", "source_id", "status", "result_count"), 120),
+                 "errors": {str(k)[:64]: text(v, 80) for k,v in item.get("errors", {}).items()}
+                 if isinstance(item.get("errors"), dict) else {}}
+                for item in search_log[-12:] if isinstance(item, dict)
+            ]
     # Citations are source-retrieval receipts, not proof that claims are true.
     # Never infer citations from worker prose or from arbitrary returned URLs.
     if source == "publish_result":
@@ -225,6 +272,12 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                 result["content_sections_omitted"] += 1
         elif result["findings"]:
             result["findings"].pop()
+        elif result.get("research_progress", {}).get("verified_passages"):
+            result["research_progress"]["verified_passages"].pop()
+        elif result.get("evidence"):
+            result["evidence"].pop()
+        elif result.get("search_log"):
+            result["search_log"].pop(0)
         else:
             break
     return result
