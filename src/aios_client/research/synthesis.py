@@ -78,6 +78,28 @@ def merge_research_report(spec, tools, report):
     data.setdefault("requested_content", [])
     if not isinstance(data["findings"], list):
         data["findings"] = []
+    verified = {(row.get("evidence_id"), row.get("section"))
+                for row in _verified_passages(tools, limit=12)}
+    checked = []
+    unsupported = 0
+    for finding in data["findings"][:5]:
+        if not isinstance(finding, dict):
+            unsupported += 1
+            continue
+        ref = (finding.get("evidence_id"), finding.get("section"))
+        if ref not in verified:
+            unsupported += 1
+            continue
+        receipt = next((row for row in _verified_passages(tools, limit=12)
+                        if (row.get("evidence_id"), row.get("section")) == ref), None)
+        if finding.get("source_id") != receipt.get("source_id"):
+            unsupported += 1
+            continue
+        checked.append(finding)
+    data["findings"] = checked
+    if unsupported:
+        data["limitations"].append(
+            f"{unsupported} model-authored findings omitted: no matching retrieved passage receipt.")
     # A failed search or unread acquisition cannot establish whole-library absence.
     unresolved = any(row.get("status") in {"source_error", "source_unhealthy"}
                      for row in data["search_log"])
