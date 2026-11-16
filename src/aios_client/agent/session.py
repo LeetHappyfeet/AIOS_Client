@@ -171,8 +171,19 @@ class AgentSession:
             }
             if research:
                 budget = self.workspace.research_tools.control
+                unread = getattr(self.workspace.research_tools,
+                                 "recommended_unread", lambda: None)()
+                can_read_candidate = (
+                    unread is not None
+                    and budget.acquisitions < budget.max_acquisitions
+                    and budget.passages < budget.max_passages
+                    and budget.failed_acquisitions < budget.max_failed_acquisitions
+                )
+                # Running out of SEARCHES must not prevent a last useful READ.
+                # The reserved reporting steps and other budgets still win.
                 finalizing = (step >= step_limit - report_steps
-                              or budget.searches >= budget.max_searches
+                              or (budget.searches >= budget.max_searches
+                                  and not can_read_candidate)
                               or budget.passages >= budget.max_passages
                               or budget.failed_acquisitions >= budget.max_failed_acquisitions)
                 if finalizing:
