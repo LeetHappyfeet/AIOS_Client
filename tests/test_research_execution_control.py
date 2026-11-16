@@ -386,6 +386,7 @@ def test_unread_candidate_can_be_opened_after_search_quota_but_not_report_reserv
     assert all(calls[i] for i in (0, 1, 2))
     assert all(call[0]["function"]["name"] == "research_read" for call in calls[:3])
     assert calls[-1] == []
+    assert session.context.state["recommended_unread_evidence"]["evidence_id"] == "a" * 24
     assert report["outcome"] == "blocked"
 
 
@@ -409,3 +410,31 @@ def test_first_read_chooses_relevant_pdf_page_for_compound_query(monkeypatch):
     assert passage["section"] == "page:2"
     assert "Pleistocene" in passage["text"]
     assert passage["passage_retrieved"] is True
+
+
+def test_candidate_after_sixth_position_survives_research_context_ledger():
+    """A later on-topic book must not vanish behind generic first-page hits."""
+    atom = "http://www.w3.org/2005/Atom"
+    rows = []
+    for i in range(7):
+        title = "Glacial Processes and Sediments" if i == 6 else "Daily News"
+        rows.append(
+            f'<entry><title>{title}</title><id>urn:uuid:{i}</id>'
+            f'<author><name>Author</name></author>'
+            f'<link rel="http://opds-spec.org/acquisition" '
+            f'type="application/pdf" href="/book{i}.pdf"/></entry>'
+        )
+    feed = '<feed xmlns="' + atom + '">' + "".join(rows) + "</feed>"
+    tool = ResearchTools(
+        Host(), [source()], httpx.MockTransport(
+            lambda request: httpx.Response(
+                200, headers={"content-type": "application/atom+xml"}, text=feed
+            )
+        ),
+    )
+    result = tool.research_search("glacial", "calibre", limit=10)
+    expected_id = next(x["evidence_id"] for x in result["results"]
+                       if x["title"] == "Glacial Processes and Sediments")
+    assert any(item["evidence_id"] == expected_id
+               for item in tool.control.snapshot()["candidates"])
+    assert tool.recommended_unread()["evidence_id"] == expected_id
