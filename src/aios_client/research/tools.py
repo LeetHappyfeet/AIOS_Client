@@ -247,10 +247,14 @@ class ResearchTools:
             identifier = entry.findtext(ATOM + "id") or ""
             summary = entry.findtext(ATOM + "summary") or author
             acquisition = None
+            formats = []
             for link in entry.findall(ATOM + "link"):
                 if "acquisition" not in link.attrib.get("rel", ""):
                     continue
-                if link.attrib.get("type", "").split(";", 1)[0] not in {
+                media_type = link.attrib.get("type", "").split(";", 1)[0]
+                if media_type and media_type not in formats:
+                    formats.append(media_type[:80])
+                if media_type not in {
                     "application/epub+zip", "application/pdf"
                 }:
                     continue
@@ -263,9 +267,12 @@ class ResearchTools:
                 acquisition = {"url": url, "kind": (".pdf" if link.attrib.get("type") == "application/pdf"
                                                  else ".epub")}
                 break
-            results.append(self._store(source, "calibre_book", title, summary,
-                                       location={"catalog_id": identifier[:300]},
-                                       internal={"acquisition": acquisition, "query": query}))
+            item = self._store(source, "calibre_book", title, summary,
+                               location={"catalog_id": identifier[:300]},
+                               internal={"acquisition": acquisition, "query": query})
+            item["readable"] = acquisition is not None
+            item["available_formats"] = formats[:8]
+            results.append(item)
         return {"results": results, "search_mode": search_mode,
                 **({"full_text_error": first_error} if first_error else {})}
 
