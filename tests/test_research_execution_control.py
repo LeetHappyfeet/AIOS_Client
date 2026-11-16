@@ -168,6 +168,7 @@ def test_oversized_book_fails_once_without_repeated_download(monkeypatch):
     assert second["cache_hit"] is True
     assert first["limit_bytes"] == 1024 * 1024
     assert tool.control.failed_acquisitions == 1
+    assert tool.control.passages == 1  # cached failure does not consume passages
     assert sum("/book.pdf" in url for url in requests) == 1
 
 
