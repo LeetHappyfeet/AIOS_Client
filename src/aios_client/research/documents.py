@@ -4,12 +4,15 @@ from __future__ import annotations
 
 import hashlib
 import io
+import logging
+import threading
 import zipfile
 from html.parser import HTMLParser
 
 MAX_DOCUMENT = 6 * 1024 * 1024
 MAX_PAGES = 80
 MAX_EXTRACTED_CHARS = 250_000
+_PDF_PARSE_LOCK = threading.Lock()
 
 
 class TextOnly(HTMLParser):
@@ -60,19 +63,28 @@ def extract_document(data: bytes, kind: str):
             from pypdf import PdfReader
         except ImportError:
             return [], ["pypdf_not_installed"]
-        try:
-            reader = PdfReader(io.BytesIO(data), strict=False)
-            sections = []
-            for i, page in enumerate(reader.pages[:MAX_PAGES], 1):
-                text = (page.extract_text() or "")[:8000]
-                if text.strip():
-                    sections.append((f"page:{i}", text))
-            limitations = ["page_limit"] if len(reader.pages) > MAX_PAGES else []
-            if not sections:
-                limitations.append("no_extractable_text")
-            return sections, limitations
-        except Exception:
-            return [], ["pdf_extraction_failed"]
+        # pypdf may print full font dictionaries and malformed-object diagnostics
+        # for every page. These warnings are not evidence that extraction failed.
+        # Keep extraction outcomes explicit while limiting console noise.
+        with _PDF_PARSE_LOCK:
+            logger = logging.getLogger("pypdf")
+            old_level = logger.level
+            logger.setLevel(logging.ERROR)
+            try:
+                reader = PdfReader(io.BytesIO(data), strict=False)
+                sections = []
+                for i, page in enumerate(reader.pages[:MAX_PAGES], 1):
+                    text = (page.extract_text() or "")[:8000]
+                    if text.strip():
+                        sections.append((f"page:{i}", text))
+                limitations = ["page_limit"] if len(reader.pages) > MAX_PAGES else []
+                if not sections:
+                    limitations.append("no_extractable_text")
+                return sections, limitations
+            except Exception:
+                return [], ["pdf_extraction_failed"]
+            finally:
+                logger.setLevel(old_level)
     if kind == ".epub":
         try:
             result = []
