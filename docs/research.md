@@ -3,6 +3,75 @@
 Research is opt-in. Existing AIOS-Client installations have **no** granted research
 sources. No Google, paid API, or SearXNG service is required to run the client.
 
+## Configure sources from the setup page or a JSON file
+
+In the AIOS-Client setup page (normally port 8765), open **Research sources**.
+Select **SearXNG**, **Calibre OPDS**, or a local-directory adapter; enter a
+unique source ID and server URL, then **Save research source**. You may select a
+saved source to edit it, **Test network connection** (SearXNG and Calibre), or
+delete it when no agent still grants it. A disabled source cannot remain
+granted. Save an agent profile with its allowed source checkboxes and choose
+**Workspace** or **Research-only** under Tool mode. Stop and restart listeners
+after changing source configuration or grants.
+
+The UI and headless setups use the **same file**: `research_sources.json`
+beside the main AIOS-Client configuration JSON. You can create or edit this
+file using any text editor and click **Reload config file** in the setup UI.
+A source file is optional until the first source is granted to an agent.
+Example LAN configuration (replace the example addresses with IPs or DNS names
+reachable **from the AIOS-Client host**):
+
+```json
+{
+  "version": 1,
+  "sources": [
+    {
+      "id": "home-search",
+      "adapter": "searxng",
+      "endpoint": "http://192.168.1.50:8080",
+      "enabled": true,
+      "priority": 10,
+      "topics": ["general"]
+    },
+    {
+      "id": "home-library",
+      "adapter": "calibre_opds",
+      "endpoint": "http://192.168.1.60:8080/opds",
+      "enabled": true,
+      "priority": 20,
+      "topics": ["general"]
+    }
+  ]
+}
+```
+
+The corresponding agent profile in the main configuration file may contain:
+
+```json
+"research_sources": ["home-search", "home-library"],
+"tool_mode": "research"
+```
+
+`tool_mode: "workspace"` retains the existing general workspace tools and also
+makes explicitly granted research tools available; `research` limits the model
+to the research tool allowlist and supporting report/recall tools.
+
+The network test makes one bounded read-only request: SearXNG's JSON search
+endpoint or the configured Calibre OPDS catalog. It checks the response format
+without following redirects, using ambient proxies, importing documents or
+granting access. Calibre's endpoint **must end in /opds**. This first pass only
+supports anonymous Calibre OPDS, not username/password-protected catalogs.
+If a source is unreachable or JSON/XML support is missing, the test returns
+a diagnostic status. The setup page is administrator-controlled; only configure
+trusted network destinations. Network access grants do not authorize unrestricted
+page fetching: SearXNG result-page reads still require explicit
+`read_origins` entries.
+
+The editor writes the JSON atomically with owner-only file permissions on POSIX
+hosts. Disabling, renaming or deleting a source that is currently granted to an
+agent is rejected until you update the affected profiles. Manual file edits can
+still invalidate grants; the client fails closed when it loads such a profile.
+
 ## Configure an existing SearXNG server
 
 Create `research_sources.json` in the **same directory as the AIOS-Client
