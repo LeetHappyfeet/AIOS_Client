@@ -46,7 +46,7 @@ class ResearchTools:
         ]}
 
     def _store(self, source, kind, title, excerpt, *, url=None, location=None,
-               sha256=None, internal=None):
+               sha256=None, internal=None, author=None):
         excerpt = self.workspace.redact(excerpt[:1500])
         title = self.workspace.redact(title[:200])
         identity = json.dumps([source.id, kind, url, location, sha256, excerpt],
@@ -55,6 +55,8 @@ class ResearchTools:
         item = {"evidence_id": evidence_id, "source_id": source.id, "kind": kind,
                 "title": title, "excerpt": excerpt,
                 "content_scope": "search_excerpt_only"}
+        if author:
+            item["author"] = self.workspace.redact(author[:200])
         if url:
             item["url"] = url
         if location:
@@ -269,7 +271,8 @@ class ResearchTools:
                 break
             item = self._store(source, "calibre_book", title, summary,
                                location={"catalog_id": identifier[:300]},
-                               internal={"acquisition": acquisition, "query": query})
+                               internal={"acquisition": acquisition, "query": query},
+                               author=author)
             item["readable"] = acquisition is not None
             item["available_formats"] = formats[:8]
             results.append(item)
@@ -300,6 +303,7 @@ class ResearchTools:
             return None
         _, evidence_id, item = max(choices, key=lambda entry: entry[0])
         return {"evidence_id": evidence_id, "title": item["title"],
+                "author": item.get("author", ""),
                 "source_id": item["source_id"], "content_scope": "search_excerpt_only"}
 
     def research_search(
