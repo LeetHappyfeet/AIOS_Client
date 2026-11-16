@@ -90,6 +90,8 @@ def update_source(path: Path, *, source: dict | None = None,
         if source is not None:
             parsed = ResearchSource.model_validate(source).model_dump(mode="json")
             if previous_id and previous_id != parsed["id"]:
+                if parsed["id"] in by_id:
+                    raise ValueError("Another research source already uses that ID")
                 if previous_id in granted_ids:
                     raise ValueError("Source is still granted to an agent; update grants first")
                 if previous_id not in by_id:
