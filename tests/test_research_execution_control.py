@@ -52,6 +52,8 @@ def test_search_dedup_and_calibre_acquisition_cache(monkeypatch):
     repeated = tool.research_search("  GLACIER  ", "calibre", limit=10)
     assert repeated["cache_hit"] is True
     assert tool.control.searches == 1
+    assert tool.control.queries[0]["query"] == "glacier"
+    assert tool.control.candidates[0]["status"] == "discovery_only"
     evidence_id = first["results"][0]["evidence_id"]
     one = tool.research_read(evidence_id, section_index=0)
     two = tool.research_read(evidence_id, section_index=1)
@@ -63,6 +65,10 @@ def test_search_dedup_and_calibre_acquisition_cache(monkeypatch):
     assert three["cache_hit"] is True
     assert tool.control.acquisitions == 1
     assert tool.control.passages == 2
+    ledger = tool.control.snapshot()["verified_passages"]
+    assert ledger[0]["title"] == "Glacial Geology of Michigan"
+    assert ledger[0]["passage_excerpt"] == "Ice sheet evidence"
+    assert ledger[1]["section"] == "page:2"
     assert sum("/book.pdf" in url for url in requests) == 1
 
 
@@ -119,6 +125,7 @@ def test_research_fallback_reports_evidence_without_inventing_findings():
     session.record = lambda kind, body: events.append((kind, body))
     report = json.loads(session.research_fallback("Step budget exhausted"))
     assert report["outcome"] == "partial"
+    assert report["findings"] == []
     assert report["evidence"][0]["title"] == "An observed source"
     assert "geological" not in report["summary"].lower()
     assert "Step budget exhausted" in report["limitations"]
