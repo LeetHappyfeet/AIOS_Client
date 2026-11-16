@@ -164,3 +164,105 @@ def test_oversized_book_fails_once_without_repeated_download(monkeypatch):
     assert first["limit_bytes"] == 10
     assert tool.control.failed_acquisitions == 1
     assert sum("/book.pdf" in url for url in requests) == 1
+
+
+def test_research_session_reserves_final_steps_and_caps_model_calls():
+    """A model that refuses to summarize cannot consume a 60-step research run."""
+    import threading
+    import time
+    from aios_client.agent.session import AgentSession
+
+    calls = []
+    class Model:
+        http = SimpleNamespace(timeout=SimpleNamespace(read=5))
+        def completion(self, model_id, messages, tools, timeout=None):
+            calls.append({"tools": tools})
+            return {"content": "not json", "tool_calls": []}
+
+    class Context:
+        state = {}
+        history = []
+        compacted = 0
+        def prepare(self):
+            return [{"role": "system", "content": "research"}]
+        def append(self, message):
+            pass
+
+    control = ResearchControl()
+    research_tools = SimpleNamespace(control=control, evidence={}, sources={"calibre": object()})
+    registry = SimpleNamespace(tool_mode="research", catalog=lambda: [
+        {"type": "function", "function": {"name": "research_search"}}])
+    workspace = SimpleNamespace(
+        research_tools=research_tools, registry=registry,
+        process_status=lambda: {"processes": []}, host_info=lambda: {},
+        guard=lambda: None, clean=lambda value: value, redact=lambda value: value,
+        published_result=None, model_diagnostics={},
+    )
+    spec = SimpleNamespace(budgets=SimpleNamespace(model_steps=60),
+                           digest=lambda: "digest")
+    session = object.__new__(AgentSession)
+    session.workspace = workspace
+    session.registry = registry
+    session.spec = spec
+    session.tasks = SimpleNamespace(plan=[], explanation="", blocked=None)
+    session.model = Model()
+    session.model_id = "test-model"
+    session.context = Context()
+    session.hud_chars = 0
+    session.instructions = SimpleNamespace(loaded={})
+    session.deadline = time.monotonic() + 60
+    session.gate = threading.Lock()
+    session.control = lambda: None
+    session.record = lambda *args: None
+    session.checkpoint = lambda: None
+    report = json.loads(session.run())
+    assert len(calls) == 20
+    assert all(not call["tools"] for call in calls[-3:])
+    assert report["outcome"] == "blocked"
+    assert "report" not in report.get("summary", "").lower() or report["findings"] == []
+
+
+def test_reporting_phase_rejects_more_tool_calls():
+    import threading
+    import time
+    from aios_client.agent.session import AgentSession
+
+    attempts = []
+    class Model:
+        http = SimpleNamespace(timeout=SimpleNamespace(read=5))
+        def completion(self, model_id, messages, tools, timeout=None):
+            attempts.append(tools)
+            return {"content": "", "tool_calls": [{
+                "id": "call-1", "type": "function",
+                "function": {"name": "research_search", "arguments": '{"query":"glacier"}'}
+            }]}
+
+    session = object.__new__(AgentSession)
+    research_tools = SimpleNamespace(control=ResearchControl(), evidence={},
+                                     sources={"calibre": object()})
+    session.workspace = SimpleNamespace(
+        research_tools=research_tools,
+        process_status=lambda: {"processes": []}, host_info=lambda: {},
+        guard=lambda: None, clean=lambda x: x, redact=lambda x: x,
+        published_result=None, model_diagnostics={})
+    session.registry = SimpleNamespace(tool_mode="research",
+                                       catalog=lambda: ["research_search"])
+    session.spec = SimpleNamespace(budgets=SimpleNamespace(model_steps=1),
+                                   digest=lambda: "digest")
+    session.tasks = SimpleNamespace(plan=[], explanation="", blocked=None)
+    session.model = Model()
+    session.model_id = "test-model"
+    session.context = SimpleNamespace(state={}, history=[], compacted=0,
+                                      prepare=lambda: [], append=lambda msg: None)
+    session.instructions = SimpleNamespace(loaded={})
+    session.hud_chars = 0
+    session.gate = threading.Lock()
+    session.deadline = time.monotonic() + 60
+    session.control = lambda: None
+    session.record = lambda *args: None
+    session.checkpoint = lambda: None
+    result = json.loads(session.run())
+    assert len(attempts) == 1
+    assert attempts[0] == []
+    assert result["outcome"] == "blocked"
+    assert research_tools.control.searches == 0
