@@ -37,6 +37,7 @@ class ResearchTools:
         self.read_cache = {}  # exact passage request -> tool response
         self.source_failures = {}
         self.search_audit = []  # bounded, operator-authoritative tool outcomes
+        self.calibre_search_probes = {}  # source ID -> root/search advertisement diagnostics
 
     def research_sources(self):
         return {"sources": [
@@ -202,6 +203,24 @@ class ResearchTools:
                             return {"results": results}
         return {"results": results}
 
+    def _calibre_search_probe(self, source):
+        """Inspect only the explicitly granted OPDS root, never chase search URLs."""
+        if source.id in self.calibre_search_probes:
+            return self.calibre_search_probes[source.id]
+        data, content_type, error = self._get(
+            source.endpoint, max_bytes=65536, accept="application/atom+xml")
+        diagnostic = {"root_status": error or "ok", "advertised_search": False}
+        if not error and ("atom" in content_type or "xml" in content_type):
+            try:
+                root = ElementTree.fromstring(data)
+                diagnostic["advertised_search"] = any(
+                    link.attrib.get("rel") == "search"
+                    for link in root.findall(".//" + ATOM + "link"))
+            except ElementTree.ParseError:
+                diagnostic["root_status"] = "invalid_opds"
+        self.calibre_search_probes[source.id] = diagnostic
+        return diagnostic
+
     def _calibre(self, source, query, limit):
         # Calibre's content server uses /opds/search/<url-encoded query>;
         # full_text=y uses its existing FTS index if enabled.
@@ -226,13 +245,42 @@ class ResearchTools:
             search_mode = "metadata"
             data, content_type, error = self._get(url, accept="application/atom+xml")
             if error:
-                return {"error": error, "full_text_error": first_error}
-            if "xml" not in content_type and "atom" not in content_type:
+                if error == "http_status_404":
+                    # Calibre maps invalid search expressions to HTTP 404.
+                    # Retry one bounded, explicitly broad metadata expression.
+                    # Never treat the result as an exact phrase match.
+                    probe = self._calibre_search_probe(source)
+                    keyword = next((w for w in query.split()
+                                    if len(w) >= 4 and w.isalnum()), None)
+                    if keyword:
+                        alternate = source.endpoint.rstrip("/") + "/search/" + quote(
+                            "all:" + keyword, safe="")
+                        alt_data, alt_type, alt_error = self._get(
+                            alternate, accept="application/atom+xml")
+                        if not alt_error and ("atom" in alt_type or "xml" in alt_type):
+                            try:
+                                alt_feed = ElementTree.fromstring(alt_data)
+                            except ElementTree.ParseError:
+                                alt_feed = None
+                            if alt_feed is not None:
+                                feed = alt_feed
+                                error = None
+                                search_mode = "metadata_broad"
+                                content_type = alt_type
+                    if error:
+                        return {"error": error, "full_text_error": first_error,
+                                "opds_search_probe": probe}
+                else:
+                    return {"error": error, "full_text_error": first_error}
+            if error is None and feed is not None:
+                pass
+            elif "xml" not in content_type and "atom" not in content_type:
                 return {"error": "not_opds"}
-            try:
-                feed = ElementTree.fromstring(data)
-            except ElementTree.ParseError:
-                return {"error": "invalid_opds"}
+            if feed is None:
+                try:
+                    feed = ElementTree.fromstring(data)
+                except ElementTree.ParseError:
+                    return {"error": "invalid_opds"}
         results = []
         entries = feed.findall(ATOM + "entry")
         # Order matching catalog metadata first; full-text hits without matching
