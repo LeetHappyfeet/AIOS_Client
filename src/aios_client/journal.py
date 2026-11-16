@@ -38,6 +38,7 @@ class Journal:
         self.db = sqlite3.connect(path, check_same_thread=False)
         self.lock = threading.RLock()
         self.delivery_lock = threading.Lock()
+        self._deferred_reports = set()  # log once per pending report per listener lifetime
         self.db.executescript("""
             PRAGMA journal_mode=WAL;
             CREATE TABLE IF NOT EXISTS runs(id TEXT PRIMARY KEY, agent TEXT, status TEXT, task TEXT,
@@ -252,10 +253,12 @@ class Journal:
                         # Do not let the stale progress notification prevent that
                         # claim. Leave BOTH notifications durable for a later flush,
                         # after AIOS confirms a terminal state.
-                        self.event(run, "delivery_deferred", {
-                            "path": path, "reason": "remote_run_lease_expired",
-                            "remote_status": remote["status"],
-                        })
+                        if key not in self._deferred_reports:
+                            self.event(run, "delivery_deferred", {
+                                "path": path, "reason": "remote_run_lease_expired",
+                                "remote_status": remote["status"],
+                            })
+                            self._deferred_reports.add(key)
                         continue
                     raise
                 reason = (
@@ -276,6 +279,7 @@ class Journal:
                     "UPDATE deliveries SET state=? WHERE id=?", (state, key)
                 )
                 self.db.execute("DELETE FROM outbox WHERE id=?", (key,))
+            self._deferred_reports.discard(key)
 
     def claims(self):
         with self.lock:
