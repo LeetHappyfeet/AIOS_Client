@@ -319,3 +319,65 @@ def test_unhealthy_calibre_search_preserves_single_word_probe_budget():
     one_word = tool.research_search("glacier", "calibre")
     assert one_word["status"] == "source_error"
     assert tool.control.searches == 4
+
+
+def test_unread_candidate_can_be_opened_after_search_quota_but_not_report_reserve():
+    import threading
+    import time
+    from aios_client.agent.session import AgentSession
+
+    calls = []
+    class Model:
+        http = SimpleNamespace(timeout=SimpleNamespace(read=5))
+        def completion(self, model_id, messages, tools, timeout=None):
+            calls.append(tools)
+            return {"content": "not json", "tool_calls": []}
+
+    class Context:
+        state = {}
+        history = []
+        compacted = 0
+        def prepare(self):
+            return []
+        def append(self, message):
+            pass
+
+    control = ResearchControl()
+    control.searches = control.max_searches
+    tools = SimpleNamespace(
+        control=control, evidence={}, sources={"calibre": object()},
+        source_failures={},
+        recommended_unread=lambda: {
+            "evidence_id": "a" * 24, "title": "Glacial Processes and Sediments"
+        },
+    )
+    session = object.__new__(AgentSession)
+    session.workspace = SimpleNamespace(
+        research_tools=tools,
+        process_status=lambda: {"processes": []}, host_info=lambda: {},
+        guard=lambda: None, clean=lambda x: x, redact=lambda x: x,
+        published_result=None, model_diagnostics={},
+    )
+    session.registry = SimpleNamespace(
+        tool_mode="research", catalog=lambda: ["research_read", "research_search"]
+    )
+    session.spec = SimpleNamespace(
+        objective="Find glaciation evidence",
+        budgets=SimpleNamespace(model_steps=4), digest=lambda: "digest"
+    )
+    session.tasks = SimpleNamespace(plan=[], explanation="", blocked=None)
+    session.model = Model()
+    session.model_id = "test"
+    session.context = Context()
+    session.hud_chars = 0
+    session.instructions = SimpleNamespace(loaded={})
+    session.deadline = time.monotonic() + 60
+    session.gate = threading.Lock()
+    session.control = lambda: None
+    session.record = lambda *args: None
+    session.checkpoint = lambda: None
+    report = json.loads(session.run())
+    assert len(calls) == 4
+    assert all(calls[i] for i in (0, 1, 2))
+    assert calls[-1] == []
+    assert report["outcome"] == "blocked"
