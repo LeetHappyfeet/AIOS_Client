@@ -387,3 +387,25 @@ def test_unread_candidate_can_be_opened_after_search_quota_but_not_report_reserv
     assert all(call[0]["function"]["name"] == "research_read" for call in calls[:3])
     assert calls[-1] == []
     assert report["outcome"] == "blocked"
+
+
+def test_first_read_chooses_relevant_pdf_page_for_compound_query(monkeypatch):
+    def serve(request):
+        if "/search/" in request.url.path:
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=FEED)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=b"mock-pdf")
+    monkeypatch.setattr("aios_client.research.tools.extract_document",
+                        lambda data, kind: ([
+                            ("page:1", "General science and basic chemistry"),
+                            ("page:2", "Pleistocene glacial deposits around Great Lakes moraines"),
+                            ("page:3", "A non-glacial chapter on rock types"),
+                        ], []))
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    result = tool.research_search("pleistocene glacier great lakes", "calibre")
+    eid = result["results"][0]["evidence_id"]
+    passage = tool.research_read(eid)
+    assert passage["section"] == "page:2"
+    assert "Pleistocene" in passage["text"]
+    assert passage["passage_retrieved"] is True
