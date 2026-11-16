@@ -361,7 +361,10 @@ def test_unread_candidate_can_be_opened_after_search_quota_but_not_report_reserv
         published_result=None, model_diagnostics={},
     )
     session.registry = SimpleNamespace(
-        tool_mode="research", catalog=lambda: ["research_read", "research_search"]
+        tool_mode="research", catalog=lambda: [
+            {"function": {"name": "research_read"}},
+            {"function": {"name": "research_search"}},
+        ]
     )
     session.spec = SimpleNamespace(
         objective="Find glaciation evidence",
@@ -381,5 +384,6 @@ def test_unread_candidate_can_be_opened_after_search_quota_but_not_report_reserv
     report = json.loads(session.run())
     assert len(calls) == 4
     assert all(calls[i] for i in (0, 1, 2))
+    assert all(call[0]["function"]["name"] == "research_read" for call in calls[:3])
     assert calls[-1] == []
     assert report["outcome"] == "blocked"
