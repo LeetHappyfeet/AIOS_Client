@@ -344,3 +344,25 @@ Calibre responses and do not need your LAN services. For an end-to-end run,
 restart the listener after updating, submit a new bounded research task from
 the character's chat, and compare search/read calls, total model steps, and
 the delivered report against the previous baseline.
+
+
+## Expired AIOS run recovery in Automatic/Listen mode
+
+When an earlier run's progress or final report receives HTTP 409, the client
+fetches that exact run's server-side state. If the server reports **running**
+with an aware `lease_expires_at` at least 60 seconds in the past, the client
+does **not** declare the old report delivered and does **not** delete it.
+Instead, the outbox remains pending, one `delivery_deferred` audit entry is
+recorded per pending report, and Listen is permitted to reach its normal claim
+path. That claim triggers AIOS's existing atomic expired-run transition to
+`interrupted` and the associated action's `timed_out` status. The next
+delivery retry can then reconcile both progress and finish as rejected,
+preserving the client's locally recorded run result and delivery history.
+
+An active or just-expired lease, absent/malformed expiry, unknown remote state,
+or failed status lookup still raises normally; no unauthorized work is retried.
+No SQL edits, outbox deletion, database migration, or new server endpoint are
+required for this fix. The feature relies on the existing AIOS claim cleanup
+and must be verified with a real Automatic listener after deployment.
+
+Regression test: `pytest -q tests/test_journal_expired_lease_recovery.py`.
