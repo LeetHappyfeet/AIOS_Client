@@ -343,7 +343,7 @@ class ResearchTools:
                                      "query": key[1][:120]})
         options = ([self.sources[source_id]] if source_id else
                    sorted(self.sources.values(), key=lambda s: (s.priority, s.id)))
-        attempted, errors = [], {}
+        attempted, errors, details = [], {}, {}
         result = None
         for source in (options if source_id else options[:2]):
             self.workspace.guard()
@@ -360,9 +360,14 @@ class ResearchTools:
                 break
             if found.get("error"):
                 errors[source.id] = found["error"]
+                details[source.id] = {
+                    "full_text_error": found.get("full_text_error"),
+                    "final_search_error": found["error"],
+                }
         if result is None:
             result = {"status": "source_error" if errors else "no_results",
-                      "results": [], "attempted_sources": attempted, "errors": errors}
+                      "results": [], "attempted_sources": attempted,
+                      "errors": errors, "error_details": details}
         for sid in attempted:
             self.source_failures[sid] = (self.source_failures.get(sid, 0) + 1
                                          if sid in errors else 0)
