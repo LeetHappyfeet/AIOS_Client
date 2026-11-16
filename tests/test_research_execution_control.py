@@ -58,6 +58,8 @@ def test_search_dedup_and_calibre_acquisition_cache(monkeypatch):
     three = tool.research_read(evidence_id, section_index=0)
     assert one["text"] == "Ice sheet evidence"
     assert two["section"] == "page:2"
+    assert one["download_cache_hit"] is False
+    assert two["download_cache_hit"] is True
     assert three["cache_hit"] is True
     assert tool.control.acquisitions == 1
     assert tool.control.passages == 2
@@ -132,3 +134,26 @@ def test_fallback_blocks_when_no_source_text_was_retrieved():
     report = json.loads(session.research_fallback("Research budget exhausted"))
     assert report["outcome"] == "blocked"
     assert report["evidence"] == []
+
+
+def test_oversized_book_fails_once_without_repeated_download(monkeypatch):
+    requests = []
+    def serve(request):
+        requests.append(str(request.url))
+        if "/search/" in request.url.path:
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=FEED)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=b"x" * 20)
+    monkeypatch.setattr("aios_client.research.tools.MAX_DOCUMENT", 10)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    result = tool.research_search("glacier", "calibre")
+    eid = result["results"][0]["evidence_id"]
+    first = tool.research_read(eid, section_index=0)
+    second = tool.research_read(eid, section_index=1)
+    assert first["error"] == second["error"] == "response_too_large"
+    assert first["cache_hit"] is False
+    assert second["cache_hit"] is True
+    assert first["limit_bytes"] == 10
+    assert tool.control.failed_acquisitions == 1
+    assert sum("/book.pdf" in url for url in requests) == 1
