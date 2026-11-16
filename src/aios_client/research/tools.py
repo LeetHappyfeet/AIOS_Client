@@ -35,6 +35,7 @@ class ResearchTools:
         self.search_cache = {}  # normalized query -> results; never retry identical searches
         self.document_cache = {}  # authorized acquisition URL -> bounded extracted sections
         self.read_cache = {}  # exact passage request -> tool response
+        self.source_failures = {}
 
     def research_sources(self):
         return {"sources": [
@@ -75,7 +76,7 @@ class ResearchTools:
                     "Accept": accept, "Accept-Encoding": "identity"
                 }) as response:
                     if response.status_code != 200:
-                        return None, None, "http_status"
+                        return None, None, f"http_status_{response.status_code}"
                     if response.headers.get("content-encoding", "identity").lower() != "identity":
                         return None, None, "encoded_response"
                     content_type = response.headers.get("content-type", "").lower()
@@ -201,11 +202,16 @@ class ResearchTools:
     def _calibre(self, source, query, limit):
         # Calibre's content server uses /opds/search/<url-encoded query>;
         # full_text=y uses its existing FTS index if enabled.
-        url = source.endpoint.rstrip("/") + "/search/" + quote(query, safe="")
-        req = str(httpx.URL(url).copy_merge_params({"full_text": "y"}))
+        # Calibre metadata uses its own expression syntax, unlike SQLite FTS.
+        metadata_query = ('"' + query.replace('\\', ' ').replace('"', ' ').strip() + '"'
+                          if len(query.split()) > 1 else query)
+        url = source.endpoint.rstrip("/") + "/search/" + quote(metadata_query, safe="")
+        full_url = source.endpoint.rstrip("/") + "/search/" + quote(query, safe="")
+        req = str(httpx.URL(full_url).copy_merge_params({"full_text": "y"}))
         data, content_type, error = self._get(req, accept="application/atom+xml")
         feed = None
         search_mode = "full_text"
+        first_error = error
         if not error and ("xml" in content_type or "atom" in content_type):
             try:
                 feed = ElementTree.fromstring(data)
@@ -217,7 +223,7 @@ class ResearchTools:
             search_mode = "metadata"
             data, content_type, error = self._get(url, accept="application/atom+xml")
             if error:
-                return {"error": error}
+                return {"error": error, "full_text_error": first_error}
             if "xml" not in content_type and "atom" not in content_type:
                 return {"error": "not_opds"}
             try:
@@ -260,7 +266,29 @@ class ResearchTools:
             results.append(self._store(source, "calibre_book", title, summary,
                                        location={"catalog_id": identifier[:300]},
                                        internal={"acquisition": acquisition, "query": query}))
-        return {"results": results, "search_mode": search_mode}
+        return {"results": results, "search_mode": search_mode,
+                **({"full_text_error": first_error} if first_error else {})}
+
+    def recommended_unread(self, source_id=None):
+        """Expose a potentially relevant retrievable book, never a verified finding."""
+        terms = set()
+        for query in self.control.queries:
+            terms.update(w[:5] for w in query["query"].casefold().split() if len(w) >= 5)
+        choices = []
+        for evidence_id, entry in self.evidence.items():
+            item = entry["public"]
+            if source_id is not None and item["source_id"] != source_id:
+                continue
+            if entry.get("read") is not None or not entry["internal"].get("acquisition"):
+                continue
+            score = sum(1 for term in terms if term in item["title"].casefold())
+            if score:
+                choices.append((score, evidence_id, item))
+        if not choices:
+            return None
+        _, evidence_id, item = max(choices, key=lambda entry: entry[0])
+        return {"evidence_id": evidence_id, "title": item["title"],
+                "source_id": item["source_id"], "content_scope": "search_excerpt_only"}
 
     def research_search(
         self,
@@ -279,6 +307,12 @@ class ResearchTools:
             cached["results"] = cached.get("results", [])[:limit]
             cached["cache_hit"] = True
             return cached
+        unread = self.recommended_unread(source_id)
+        if unread and self.control.searches >= 2 and not self.control.verified_passages:
+            return {"status": "read_recommended", "results": [],
+                    "recommended_evidence": unread,
+                    "reason": "Read the available relevant book before further searching",
+                    "research_progress": self.control.snapshot()}
         if not self.control.allowed("search"):
             return {"status": "budget_exhausted", "results": [],
                     "reason": "research_search_limit", "research_progress": self.control.snapshot()}
@@ -307,6 +341,9 @@ class ResearchTools:
         if result is None:
             result = {"status": "source_error" if errors else "no_results",
                       "results": [], "attempted_sources": attempted, "errors": errors}
+        for sid in attempted:
+            self.source_failures[sid] = (self.source_failures.get(sid, 0) + 1
+                                         if sid in errors else 0)
         self.search_cache[key] = result
         for hit in result.get("results", [])[:4]:
             candidate = {"evidence_id": hit["evidence_id"],
