@@ -301,3 +301,46 @@ is not registered. No operator credential is copied to the client.
 The feature does not yet stage or upload complete documents. The next pass
 can link accepted nominations to the existing AIOS corpus importer with a
 separate content-transfer authorization boundary.
+
+
+## Research execution control (experimental)
+
+Research-only profiles now use a bounded per-run controller to avoid the
+Calibre search/read loop observed on 2026-11-16. Defaults: at most 8 **unique**
+normalized searches, 6 distinct network book acquisitions, 12 distinct passage
+requests and 4 failed acquisitions. Exact duplicate searches/reads reuse
+run-local results rather than spending another network request; successful
+Calibre book downloads and extracted sections are cached for the run only.
+The extracted book content is **not** added to the AIOS corpus or character
+memory. A cache hit does not upgrade search snippets to read evidence.
+
+Research-only runs use at most 20 model steps (or a smaller authorized assignment
+budget), with up to 3 steps reserved for a structured final report. Once research
+budgets are consumed, the model is directed to synthesize only the evidence it has
+already received; no further tools are exposed for that reporting phase. If the
+model still refuses to finish or returns invalid JSON, the host generates a
+**partial/blocked evidence-only receipt report**, never fabricated research
+findings. Host reports remain attributable worker evidence, not a geological
+truth claim. Expired leases, cancellation and infrastructure failures may still
+prevent final delivery; this is not a guarantee of success.
+
+Calibre search results distinguish metadata fallback from full-text search
+(`search_mode`), rank matching catalog metadata ahead of other hits, and report
+provider errors as `source_error` rather than falsely reporting an empty
+catalog. PDF/EPUB extraction remains capped at **6 MiB per book**, **80 pages
+or sections**, and bounded text sizes. Increasing those limits or supporting
+range-based PDF acquisition is deferred to a separate security/performance
+review. PDF extraction installs fontTools and limits verbose pypdf logging;
+malformed/no-text extraction is still reported as a failure or limitation.
+
+Research evidence receipts preserve a bounded list of verified section
+locations (`sections`), while `section` remains the latest location for
+backward compatibility. Publication carries `sections_read`; citation
+verification attests retrieval, **not** the truth or relevance of a finding.
+
+Regression tests: `pytest -q tests/test_research_execution_control.py
+tests/test_research_source_setup.py`. The tests exercise mocked, in-process
+Calibre responses and do not need your LAN services. For an end-to-end run,
+restart the listener after updating, submit a new bounded research task from
+the character's chat, and compare search/read calls, total model steps, and
+the delivered report against the previous baseline.
