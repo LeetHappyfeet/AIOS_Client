@@ -34,6 +34,11 @@ def report():
         ],
         "research_progress": {
             "searches": 1, "acquisitions": 1, "passages": 1, "failed_acquisitions": 0,
+            "pdf_coverage": [{
+                "evidence_id": "a" * 24, "source_id": "calibre", "total_pages": 93,
+                "indexed_pages": 90, "no_text_pages": 1, "unprocessed_pages": 2,
+                "unprocessed_range": "92–93", "path": "/private/document.pdf",
+            }],
             "verified_passages": [{
                 "evidence_id": "a" * 24, "source_id": "calibre",
                 "title": "Quaternary", "section": "page:7",
@@ -54,6 +59,11 @@ def test_partial_report_preserves_readable_passage_and_error_status():
     assert summary["evidence"][0]["section"] == "page:7"
     assert "central North American" in summary["research_progress"]["verified_passages"][0]["passage_excerpt"]
     assert summary["search_log"][0]["errors"]["calibre"] == "http_status_404"
+    assert summary["research_progress"]["pdf_coverage"] == [{
+        "evidence_id": "a" * 24, "source_id": "calibre", "total_pages": 93,
+        "indexed_pages": 90, "no_text_pages": 1, "unprocessed_pages": 2,
+        "unprocessed_range": "92–93",
+    }]
     assert "private.example" not in json.dumps(summary)
     assert len(json.dumps(summary)) < 18000
 

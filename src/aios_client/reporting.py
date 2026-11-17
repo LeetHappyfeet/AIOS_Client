@@ -232,6 +232,15 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                 "failed_acquisitions": progress.get("failed_acquisitions", 0),
                 "verified_passages": retained[-8:],
             }
+        coverage = progress.get("pdf_coverage")
+        if isinstance(coverage, list) and coverage:
+            result.setdefault("research_progress", {})["pdf_coverage"] = [
+                shallow(item, ("evidence_id", "source_id", "title", "document_sha256",
+                               "total_pages", "attempted_pages", "indexed_pages",
+                               "no_text_pages", "failed_pages", "clipped_pages",
+                               "unprocessed_pages", "unprocessed_range"), 120)
+                for item in coverage[-8:] if isinstance(item, dict)
+            ]
         if isinstance(value.get("evidence"), list):
             result["evidence"] = [
                 shallow(item, ("evidence_id", "source_id", "title", "author",
@@ -280,6 +289,8 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
             result["evidence"].pop()
         elif result.get("search_log"):
             result["search_log"].pop(0)
+        elif result.get("research_progress", {}).get("pdf_coverage"):
+            result["research_progress"]["pdf_coverage"].pop(0)
         else:
             break
     return result

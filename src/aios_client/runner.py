@@ -482,6 +482,7 @@ class Runner:
             research_index_path=self.directory / "research-index.sqlite3",
             research_evidence_path=self.directory / "research-evidence.sqlite3",
             research_run_id=rid,
+            research_staged_pdf_path=self.store.data_dir / "staged-calibre-pdfs",
         )
         lease_stop = threading.Event()
         lease_error = []

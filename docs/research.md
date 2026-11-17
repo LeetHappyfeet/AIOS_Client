@@ -532,3 +532,38 @@ Any clipped evidence is marked by the existing `transport_truncated` field.
 No migration, new execution capability, or general file access is necessary.
 Use `python -m pytest -q tests/test_retained_research_transport.py` to
 check projection size and URL exclusion before running a live agent.
+
+## Stage an oversized Calibre PDF
+
+Export the PDF from Calibre and copy it to the AIOS Client host. Use the
+exact OPDS entry ID from the search result's `location.catalog_id` (or the
+matching Atom entry's `<id>`), and the source ID configured in the client:
+
+```bash
+sudo apt install poppler-utils util-linux
+aios-client stage-calibre-pdf --source calibre --catalog-id 'urn:uuid:your-book-id' \
+  --pdf /path/to/export.pdf
+```
+
+Run the command as the client operator with the same `--config` as the worker
+and let it finish before starting a research run. The command binds the file
+you supply to that catalog entry. Confirm the export belongs to that entry.
+Staging defaults to 128 MiB, 1,000 pages and 300 seconds of extraction.
+Override these with `--max-mib` (up to 512), `--max-pages` (up to 2,000),
+and `--timeout` (up to 1,800 seconds). The operator import uses Linux Poppler
+and `prlimit`. The temporary PDF copy is removed after staging. The index
+retains at most 8,000 characters per page and 2,000,000 per PDF.
+
+The catalog still uses the 128 KiB OPDS search response limit. Ordinary
+downloads still default to 12 MiB, with an operator-set range of 1–24 MiB. Staged reads use indexed text from the imported
+snapshot without downloading the original again. Existing source grants
+apply, and the entry still needs to be discovered in Calibre. Search hits
+carry a page and section index that can be passed to `research_read` for a
+citation receipt. Coverage reports total, attempted, indexed, blank or
+textless, failed, clipped, and unprocessed pages. It includes the range
+that was skipped when extraction stopped. Scans and charts with no text
+layer require OCR outside this workflow.
+
+Restage after replacing the Calibre PDF to update the snapshot in new
+research runs. Remove an index with
+`aios-client unstage-calibre-pdf --source calibre --catalog-id 'urn:uuid:your-book-id'`.

@@ -74,9 +74,32 @@ def main():
                 "--request-id",
                 help="Reuse an assignment request ID after an uncertain submission",
             )
+    stage = sub.add_parser("stage-calibre-pdf", help="Index a Calibre PDF export")
+    unstage = sub.add_parser("unstage-calibre-pdf", help="Remove a staged PDF index")
+    for command in (stage, unstage):
+        command.add_argument("--source", required=True)
+        command.add_argument("--catalog-id", required=True, help="Exact OPDS entry ID")
+    stage.add_argument("--pdf", required=True, type=Path)
+    stage.add_argument("--max-mib", type=int, default=128)
+    stage.add_argument("--max-pages", type=int, default=1000)
+    stage.add_argument("--timeout", type=int, default=300, help="Extraction seconds")
     args = parser.parse_args()
     store = ConfigStore(args.config)
     try:
+        if args.command in ("stage-calibre-pdf", "unstage-calibre-pdf"):
+            from .research.sources import load_sources
+            from .research.staged_pdf import stage_pdf, unstage_pdf
+
+            source, = load_sources(store.path.parent / "research_sources.json", [args.source])
+            directory = store.data_dir / "staged-calibre-pdfs"
+            if args.command == "stage-calibre-pdf":
+                result = stage_pdf(directory, source, args.catalog_id, args.pdf.expanduser(),
+                                   max_bytes=args.max_mib * 1024 * 1024,
+                                   max_pages=args.max_pages, timeout=args.timeout)
+                print(json.dumps(result, indent=2))
+            else:
+                unstage_pdf(directory, source, args.catalog_id)
+            return
         if args.command in ("configure-ui", "setup"):
             ui_store = UISettings(store.path)
             settings = ui_store.load()

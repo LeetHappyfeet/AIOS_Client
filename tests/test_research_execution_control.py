@@ -541,3 +541,111 @@ def test_find_calibre_passages_ranks_books_and_reuses_document(monkeypatch):
     assert tool.control.verified_passages[0]["match_score"] == 2
     assert downloads == ["/book.pdf", "/second.pdf"]
     assert tool.control.passages == 1
+
+
+def test_staged_oversized_calibre_pdf_cites_later_page(tmp_path, monkeypatch, capsys):
+    import hashlib
+    import shutil
+    import sys
+
+    import pytest
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    from aios_client.cli import main
+    from aios_client.research.staged_pdf import stage_pdf
+
+    if not all(shutil.which(cmd) for cmd in ("prlimit", "pdfinfo", "pdftotext")):
+        pytest.skip("Poppler utilities and prlimit are required for staging")
+    pdf = tmp_path / "export.pdf"
+    writer = PdfWriter()
+    for page in range(1, 94):
+        writer.add_blank_page(200, 200)
+    page = writer.pages[90]
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 12 Tf 10 100 Td (Unique moraine marker) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_attachment("payload.dat", bytes(25 * 1024 * 1024))
+    writer.write(pdf)
+    assert pdf.stat().st_size > 24 * 1024 * 1024
+    payload = pdf.read_bytes()
+    root = tmp_path / "client-data" / "staged-calibre-pdfs"
+    config = tmp_path / "client.json"
+    (tmp_path / "research_sources.json").write_text(json.dumps({
+        "version": 1, "sources": [source().model_dump()],
+    }))
+    requests = []
+
+    def serve(request):
+        requests.append(request.url.path)
+        if "/search/" in request.url.path:
+            feed = FEED
+            if "oversized catalog" in request.url.path:
+                feed += " " * (128 * 1024)
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=feed)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=payload)
+
+    def tools_for(configured_source):
+        return ResearchTools(Host(), [configured_source], httpx.MockTransport(serve),
+                             staged_pdf_path=root)
+
+    tool = tools_for(source())
+    book = tool.research_search("moraine", "calibre")["results"][0]
+    eid = book["evidence_id"]
+    failure = tool.research_read(eid)
+    assert failure["error"] == "response_too_large"
+    assert failure["limit_bytes"] == 12 * 1024 * 1024
+    assert failure["evidence"]["location"]["catalog_id"] == "urn:uuid:one"
+
+    with pytest.raises(ValueError, match="staging byte limit"):
+        stage_pdf(root, source(), "urn:uuid:one", pdf, max_bytes=24 * 1024 * 1024,
+                  max_pages=91, timeout=30)
+    operator = ["aios-client", "--config", str(config)]
+    selection = ["--source", "calibre", "--catalog-id", "urn:uuid:one"]
+    monkeypatch.setattr(sys, "argv", [*operator, "stage-calibre-pdf", *selection,
+                                    "--pdf", str(pdf), "--max-mib", "32",
+                                    "--max-pages", "91", "--timeout", "30"])
+    main()
+    staged = json.loads(capsys.readouterr().out)
+    assert staged["coverage"] == {
+        "total_pages": 93, "attempted_pages": 91, "indexed_pages": 1,
+        "no_text_pages": 90, "failed_pages": 0, "clipped_pages": 0,
+        "unprocessed_pages": 2, "unprocessed_range": "92–93",
+    }
+    matches = tool.research_find_passages("calibre", [eid], ["unique moraine"])
+    assert matches["coverage"][0]["pdf_coverage"] == staged["coverage"]
+    hit, = matches["matches"]
+    assert (hit["section"], hit["section_index"]) == ("page:91", 90)
+    assert tool.research_evidence(eid)["receipt"]["read_verified"] is False
+    assert tool.research_read(eid, section_index=89)["error"] == "pdf_page_unavailable"
+    result = tool.research_read(eid, section_index=hit["section_index"], cursor=hit["cursor"])
+    assert result["text"] == "Unique moraine marker"
+    assert result["section"] == "page:91"
+    assert result["passage_retrieved"] is True
+    assert result["full_document_retrieved"] is False
+    assert result["document_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert result["research_progress"]["pdf_coverage"][0]["total_pages"] == 93
+    assert tool.research_evidence(eid)["receipt"]["read_verified"] is True
+    assert requests.count("/book.pdf") == 1
+    catalog = tools_for(source()).research_search("oversized catalog", "calibre")
+    assert catalog["errors"]["calibre"] == "response_too_large"
+
+    other_endpoint = source().model_copy(update={"endpoint": "http://other.lan/opds"})
+    other = tools_for(other_endpoint)
+    other_eid = other.research_search("moraine", "calibre")["results"][0]["evidence_id"]
+    assert other.research_read(other_eid)["error"] == "response_too_large"
+    monkeypatch.setattr(sys, "argv", [*operator, "unstage-calibre-pdf", *selection])
+    main()
+    later = tools_for(source())
+    later_eid = later.research_search("moraine", "calibre")["results"][0]["evidence_id"]
+    assert later.research_read(later_eid)["error"] == "response_too_large"

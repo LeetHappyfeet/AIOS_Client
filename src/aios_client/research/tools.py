@@ -18,6 +18,7 @@ from pydantic import Field
 
 from .documents import MAX_DOCUMENT, digest, extract_document, html_text
 from .index import DocumentIndex
+from .staged_pdf import MAX_STAGE_PAGES, load_staged_pdf
 from .http import SEARXNG_FORBIDDEN_HINT, fetch, searxng_request
 from .evidence import EvidenceStore
 from .control import ResearchControl
@@ -28,7 +29,8 @@ ATOM = "{http://www.w3.org/2005/Atom}"
 
 
 class ResearchTools:
-    def __init__(self, workspace, sources, transport=None, index_path=None, evidence_path=None, run_id=None):
+    def __init__(self, workspace, sources, transport=None, index_path=None, evidence_path=None,
+                 run_id=None, *, staged_pdf_path=None):
         self.workspace = workspace
         self.sources = {source.id: source for source in sources}
         self.transport = transport
@@ -36,8 +38,10 @@ class ResearchTools:
         self.index = DocumentIndex(index_path) if index_path else None
         self.receipts = EvidenceStore(evidence_path, run_id)
         self.control = ResearchControl()
+        self.staged_pdf_path = Path(staged_pdf_path).resolve() if staged_pdf_path else None
+        self.staged_pdfs = {}  # pin staged snapshots for consistent citations within each run
         self.search_cache = {}  # normalized query -> results; never retry identical searches
-        self.document_cache = {}  # authorized acquisition URL -> bounded extracted sections
+        self.document_cache = {}  # source and acquisition URL -> bounded extracted sections
         self.read_cache = {}  # exact passage request -> tool response
         self.source_failures = {}
         self.passage_targets = {}  # (evidence, section index, cursor) -> match score
@@ -326,12 +330,12 @@ class ResearchTools:
                         continue
                 except ValueError:
                     continue
-                acquisition = {"url": url, "kind": (".pdf" if link.attrib.get("type") == "application/pdf"
+                acquisition = {"url": url, "kind": (".pdf" if media_type == "application/pdf"
                                                  else ".epub")}
                 break
             item = self._store(source, "calibre_book", title, summary,
                                location={"catalog_id": identifier[:300]},
-                               internal={"acquisition": acquisition, "query": query},
+                               internal={"acquisition": acquisition, "query": query, "catalog_id": identifier},
                                author=author)
             item["readable"] = acquisition is not None
             item["available_formats"] = formats[:8]
@@ -491,17 +495,48 @@ class ResearchTools:
         response["research_progress"] = self.control.snapshot()
         return self._audit_search(query, source_id, response)
 
-    def _calibre_document(self, source, acquisition):
+    def _staged_document(self, source, entry):
+        catalog_id = entry["internal"].get("catalog_id")
+        if not catalog_id or not catalog_id.strip() or len(catalog_id) > 300:
+            return None
+        key = (source.id, catalog_id)
+        if key not in self.staged_pdfs:
+            acquisition = entry["internal"].get("acquisition")
+            if acquisition:
+                acquired = self.document_cache.get((source.id, acquisition["url"]))
+                if acquired and not acquired.get("error"):
+                    return None  # keep evidence reads on the snapshot already in use
+            staged = load_staged_pdf(self.staged_pdf_path, source, catalog_id,
+                                     self.workspace.guard)
+            if staged is not None:
+                self.staged_pdfs[key] = staged
+        document = self.staged_pdfs.get(key)
+        if document and "coverage" in document:
+            evidence = entry["public"]
+            self.control.pdf_coverage[evidence["evidence_id"]] = {
+                "evidence_id": evidence["evidence_id"], "source_id": source.id,
+                "title": evidence["title"][:120], "document_sha256": document["sha256"],
+                **document["coverage"],
+            }
+        return document
+
+    def _calibre_document(self, source, entry):
+        staged = self._staged_document(source, entry)
+        if staged is not None:
+            return staged, False
+        acquisition = entry["internal"].get("acquisition")
+        if not acquisition:
+            return {"error": "no_supported_acquisition"}, False
         if canonical_origin(acquisition["url"]) != canonical_origin(source.endpoint):
             return {"error": "acquisition_origin_rejected"}, False
-        acquisition_key = acquisition["url"]
+        acquisition_key = (source.id, acquisition["url"])
         was_cached = acquisition_key in self.document_cache
         if not was_cached:
             if not self.control.allowed("acquisition"):
                 return {"error": "research_acquisition_limit"}, False
             self.control.acquisitions += 1
             data, content_type, error = self._get(
-                acquisition_key, max_bytes=source.max_document_bytes,
+                acquisition["url"], max_bytes=source.max_document_bytes,
                 accept="application/pdf, application/epub+zip")
             if error:
                 self.control.failed_acquisitions += 1
@@ -510,7 +545,7 @@ class ResearchTools:
                 sections, limitations = extract_document(
                     data, acquisition["kind"], max_bytes=source.max_document_bytes)
                 self.document_cache[acquisition_key] = {
-                    "sections": sections, "limitations": limitations,
+                    "sections": dict(enumerate(sections)), "limitations": limitations,
                     "sha256": digest(data),
                     "error": "no_text" if not sections else None,
                 }
@@ -551,18 +586,20 @@ class ResearchTools:
         hits, coverage = [], []
         for key, entry in books:
             self.workspace.guard()
-            acquisition = entry["internal"].get("acquisition")
-            document, _ = (self._calibre_document(source, acquisition) if acquisition
-                           else ({"error": "no_supported_acquisition"}, False))
-            sections = document.get("sections", [])
+            document, _ = self._calibre_document(source, entry)
+            sections = document.get("sections", {})
             details = {"evidence_id": key, "title": entry["public"]["title"],
                        "searchable_sections": len(sections),
-                       "limitations": document.get("limitations", [])}
+                       "limitations": document.get("limitations", []),
+                       **({"pdf_coverage": document["coverage"]} if "coverage" in document else {}),
+                       **({"catalog_id": entry["public"]["location"]["catalog_id"],
+                           "limit_bytes": source.max_document_bytes}
+                          if document.get("error") == "response_too_large" else {})}
             if document.get("error"):
                 details["error"] = document["error"]
             coverage.append(details)
             self.scanned_books.add(key)
-            for index, (section, raw_text) in enumerate(sections):
+            for index, (section, raw_text) in sections.items():
                 self.workspace.guard()
                 content = self.workspace.redact(raw_text)
                 anchors = [match for pattern in patterns
@@ -600,7 +637,7 @@ class ResearchTools:
         evidence_id: Annotated[str, Field(pattern=r"^[a-f0-9]{24}$")],
         cursor: Annotated[int, Field(ge=0, le=250000)] = 0,
         limit: Annotated[int, Field(ge=100, le=4000)] = 2500,
-        section_index: Annotated[int | None, Field(ge=0, le=79)] = None,
+        section_index: Annotated[int | None, Field(ge=0, le=MAX_STAGE_PAGES - 1)] = None,
     ):
         self.workspace.guard()
         cache_key = (evidence_id, cursor, limit, section_index)
@@ -612,9 +649,9 @@ class ResearchTools:
         previous = self.evidence.get(evidence_id)
         if previous and previous["public"].get("kind") == "calibre_book":
             acquisition = previous["internal"].get("acquisition")
-            cached = self.document_cache.get(acquisition["url"]) if acquisition else None
-            if cached and cached.get("error"):
-                source = self.sources[previous["public"]["source_id"]]
+            source = self.sources[previous["public"]["source_id"]]
+            cached = self.document_cache.get((source.id, acquisition["url"])) if acquisition else None
+            if cached and cached.get("error") and self._staged_document(source, previous) is None:
                 return {"evidence": previous["public"].copy(),
                         "error": cached["error"], "cache_hit": True,
                         "limitations": cached.get("limitations", []),
@@ -630,6 +667,7 @@ class ResearchTools:
         source = self.sources[item["source_id"]]
         kind = item["kind"]
         internal = entry["internal"]
+        pdf_coverage = None
         if kind == "web_search_result":
             url = internal["fetch_url"]
             if canonical_origin(url) not in source.read_origins:
@@ -664,19 +702,20 @@ class ResearchTools:
                         "limitations": limitations}
             document_hash = digest(data)
         elif kind == "calibre_book":
-            acquisition = internal.get("acquisition")
-            if not acquisition:
+            document, was_cached = self._calibre_document(source, entry)
+            if document.get("error") == "no_supported_acquisition":
                 return {"evidence": item, "full_document_retrieved": False,
                         "note": "Catalog metadata only; no supported acquisition link."}
-            document, was_cached = self._calibre_document(source, acquisition)
             if document.get("error"):
                 return {"evidence": item, "error": document["error"],
                         "limitations": document.get("limitations", []),
                         "cache_hit": was_cached,
+                        **({"pdf_coverage": document["coverage"]} if "coverage" in document else {}),
                         **({"limit_bytes": source.max_document_bytes}
                            if document["error"] == "response_too_large" else {})}
             sections = document["sections"]
             limitations = document["limitations"]
+            pdf_coverage = document.get("coverage")
             if section_index is None:
                 terms = [
                     "".join(c for c in word.casefold() if c.isalnum())
@@ -691,11 +730,13 @@ class ResearchTools:
                     return sum(2 if term in lower else
                                1 if len(term) >= 5 and term[:5] in lower else 0
                                for term in terms)
-                matched = max(range(len(sections)),
-                              key=lambda i: relevance(sections[i][1]), default=0)
+                matched = max(sections, key=lambda i: relevance(sections[i][1]))
             else:
                 matched = section_index
-            if matched >= len(sections):
+            if matched not in sections:
+                if "coverage" in document:
+                    return {"evidence": item, "error": "pdf_page_unavailable",
+                            "section": f"page:{matched + 1}", "pdf_coverage": document["coverage"]}
                 return {"evidence": item, "error": "section_out_of_range",
                         "section_count": len(sections)}
             section, content = sections[matched]
@@ -712,8 +753,9 @@ class ResearchTools:
         entry["read"] = {"section": section, "document_sha256": document_hash}
         self.receipts.save(item, verified=True, section=section,
                            document_sha256=document_hash)
-        response = {"evidence": item, "full_document_retrieved": True,
+        response = {"evidence": item, "full_document_retrieved": pdf_coverage is None,
                 "passage_retrieved": True, "section": section,
+                **({"pdf_coverage": pdf_coverage} if pdf_coverage is not None else {}),
                 "download_cache_hit": was_cached if kind == "calibre_book" else False,
                 "section_count": section_count if kind == "calibre_book" else None,
                 "document_sha256": document_hash,
@@ -770,7 +812,7 @@ def register(registry, tools):
                  "research.read", effect="read")
     if any(source.adapter == "calibre_opds" for source in tools.sources.values()):
         registry.add("research_find_passages", tools.research_find_passages,
-                     "Find matching text windows in up to four Calibre books. Read a hit to cite it.",
+                     "Find matching text windows in up to four Calibre books. Check coverage and read a hit to cite it.",
                      "research.read", effect="read")
     registry.add("research_read", tools.research_read,
                  "Read bounded document passages by evidence ID. External pages require operator-approved origins.",

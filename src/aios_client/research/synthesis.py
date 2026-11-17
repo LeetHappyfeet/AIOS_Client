@@ -37,6 +37,7 @@ def compact_synthesis_messages(spec, tools):
         "assignment": str(getattr(spec, "objective", "Research assignment"))[:1200],
         "passages": passages,
         "search_statuses": audit,
+        "pdf_coverage": list(tools.control.pdf_coverage.values())[-8:],
         "search_count": tools.control.searches,
         "attempted_acquisitions": tools.control.acquisitions,
         "unread_candidates": [
@@ -53,7 +54,7 @@ def compact_synthesis_messages(spec, tools):
         " observation, interpretation, evidence_id, source_id, section),"
         " evidence (brief list), and limitations (at most 5 short strings)."
         " Cite only provided passage IDs and sections; do not quote whole pages."
-        " Treat search errors, unread books, and omitted searches as UNKNOWN COVERAGE,"
+        " Treat search errors, unread books, omitted searches, and unindexed PDF text as UNKNOWN COVERAGE,"
         " never evidence that the library lacks the subject."
         " The host will attach the authoritative objective, exact search-status log,"
         " research metrics and required output file. Do NOT repeat them."
