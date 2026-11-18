@@ -208,7 +208,8 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
             return {key: text(value[key], max_len) if isinstance(value.get(key), str)
                     else value[key]
                     for key in keys if isinstance(value.get(key), (str, int, float, bool))}
-        progress = value.get("research_progress")
+        tools = getattr(workspace, "research_tools", None)
+        progress = tools.control.snapshot() if tools is not None else value.get("research_progress")
         progress = progress if isinstance(progress, dict) else {}
         passages = progress.get("verified_passages")
         if isinstance(passages, list):
@@ -232,6 +233,12 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                 "failed_acquisitions": progress.get("failed_acquisitions", 0),
                 "verified_passages": retained[-8:],
             }
+        acquisition_errors = progress.get("acquisition_errors")
+        if isinstance(acquisition_errors, list) and acquisition_errors:
+            result.setdefault("research_progress", {})["acquisition_errors"] = [
+                shallow(item, ("evidence_id", "source_id", "title", "error", "limit_bytes"), 140)
+                for item in acquisition_errors[-8:] if isinstance(item, dict)
+            ]
         coverage = progress.get("pdf_coverage")
         if isinstance(coverage, list) and coverage:
             result.setdefault("research_progress", {})["pdf_coverage"] = [
@@ -247,7 +254,7 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                                "section", "note"), 240)
                 for item in value["evidence"][:8] if isinstance(item, dict)
             ]
-        search_log = value.get("search_log")
+        search_log = tools.search_audit if tools is not None else value.get("search_log")
         if isinstance(search_log, list):
             result["search_log"] = [
                 {**shallow(item, ("query", "source_id", "status", "result_count",
@@ -289,6 +296,8 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
             result["evidence"].pop()
         elif result.get("search_log"):
             result["search_log"].pop(0)
+        elif result.get("research_progress", {}).get("acquisition_errors"):
+            result["research_progress"]["acquisition_errors"].pop(0)
         elif result.get("research_progress", {}).get("pdf_coverage"):
             result["research_progress"]["pdf_coverage"].pop(0)
         else:

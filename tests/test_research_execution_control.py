@@ -605,6 +605,7 @@ def test_staged_oversized_calibre_pdf_cites_later_page(tmp_path, monkeypatch, ca
     failure = tool.research_read(eid)
     assert failure["error"] == "response_too_large"
     assert failure["limit_bytes"] == 12 * 1024 * 1024
+    assert tool.control.snapshot()["acquisition_errors"][0]["error"] == "response_too_large"
     assert failure["evidence"]["location"]["catalog_id"] == "urn:uuid:one"
 
     with pytest.raises(ValueError, match="staging byte limit"):
@@ -635,6 +636,7 @@ def test_staged_oversized_calibre_pdf_cites_later_page(tmp_path, monkeypatch, ca
     assert result["full_document_retrieved"] is False
     assert result["document_sha256"] == hashlib.sha256(payload).hexdigest()
     assert result["research_progress"]["pdf_coverage"][0]["total_pages"] == 93
+    assert result["research_progress"]["acquisition_errors"] == []
     assert tool.research_evidence(eid)["receipt"]["read_verified"] is True
     assert requests.count("/book.pdf") == 1
     catalog = tools_for(source()).research_search("oversized catalog", "calibre")

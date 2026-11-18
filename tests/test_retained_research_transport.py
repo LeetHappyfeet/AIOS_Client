@@ -86,3 +86,23 @@ def test_large_report_retains_bounded_evidence_without_exposing_urls():
     assert len(value["research_progress"]["verified_passages"]) <= 8
     assert len(value["search_log"]) <= 12
     assert "do not include" not in json.dumps(value)
+
+
+def test_published_research_preserves_live_tool_receipts_and_search_errors():
+    payload = report()
+    w = workspace(payload)
+    w.published_result = {**payload, "research_progress": {},
+                          "search_log": [{"query": "moraine", "status": "no_results"}]}
+    progress = payload["research_progress"]
+    progress["acquisition_errors"] = [{"title": "GLG-123", "error": "response_too_large",
+                                       "limit_bytes": 12 * 1048576}]
+    w.research_tools = SimpleNamespace(
+        control=SimpleNamespace(snapshot=lambda: progress),
+        search_audit=[{"query": "moraine", "status": "source_error",
+                       "errors": {"calibre": "http_status_404"}}],
+    )
+    summary = result_summary(w, SimpleNamespace(), "")
+    assert summary["research_progress"]["verified_passages"][0]["section"] == "page:7"
+    assert summary["research_progress"]["acquisition_errors"] == progress["acquisition_errors"]
+    assert summary["search_log"][0]["status"] == "source_error"
+    assert summary["search_log"][0]["errors"] == {"calibre": "http_status_404"}

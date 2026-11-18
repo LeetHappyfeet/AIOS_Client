@@ -376,8 +376,8 @@ class ResearchTools:
             if entry.get("read") is not None or evidence_id in self.scanned_books or not acquisition:
                 continue
             # Failed and oversized acquisitions are not recommended again.
-            if acquisition["url"] in self.document_cache and self.document_cache[
-                    acquisition["url"]].get("error"):
+            cached = self.document_cache.get((item["source_id"], acquisition["url"]), {})
+            if cached.get("error"):
                 continue
             score = sum(1 for term in terms if term in item["title"].casefold())
             if score:
@@ -521,6 +521,21 @@ class ResearchTools:
         return document
 
     def _calibre_document(self, source, entry):
+        document, cached = self._load_calibre_document(source, entry)
+        item = entry["public"]
+        key = item["evidence_id"]
+        error = document.get("error")
+        if error:
+            self.control.acquisition_errors[key] = {
+                "evidence_id": key, "source_id": source.id, "title": item["title"],
+                "error": error,
+                **({"limit_bytes": source.max_document_bytes} if error == "response_too_large" else {}),
+            }
+        else:
+            self.control.acquisition_errors.pop(key, None)
+        return document, cached
+
+    def _load_calibre_document(self, source, entry):
         staged = self._staged_document(source, entry)
         if staged is not None:
             return staged, False
