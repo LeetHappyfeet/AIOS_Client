@@ -65,8 +65,9 @@ account or VM; the workspace folder does not sandbox terminal commands.
 On headless Linux, choose **Private local file** to save keys. The AIOS workspace
 key and model-provider key are separate credentials.
 
-Commands and results appear in the terminal running the client. Use **Stop** to
-cancel work. A finished run alone does not mean its checks passed.
+The terminal and setup page show live worker status, verification, and report
+delivery. Add `--verbose` to stream command output and tool receipts. Use
+**Stop** to cancel work.
 
 ## More help
 

@@ -142,7 +142,7 @@ class AgentSession:
                     "evidence_count": len(items), "outcome": outcome})
         return json.dumps(report, ensure_ascii=False)
 
-    def run(self):
+    def run(self, *, on_phase=lambda *_: None):
         research = (getattr(self.registry, "tool_mode", "workspace") == "research"
                     and bool(self.workspace.research_tools.sources))
         step_limit = min(self.spec.budgets.model_steps, 20) if research else self.spec.budgets.model_steps
@@ -230,9 +230,11 @@ class AgentSession:
             }
             self.checkpoint()
             while not self.gate.acquire(timeout=0.2):
+                on_phase("waiting_model_slot", f"Step {step + 1}")
                 self.check()
             try:
                 self.check()
+                on_phase("waiting_model_response", f"Step {step + 1}")
                 response = self.model.completion(
                     self.model_id,
                     messages,
@@ -370,6 +372,7 @@ class AgentSession:
                         120, max(0.01, self.deadline - time.monotonic())
                     )
                     self.check()
+                    on_phase("running_tool", name)
                     observation = self.registry.execute(name, args)
                 except (
                     ToolArguments,

@@ -350,6 +350,33 @@ class Journal:
                 result.append(item)
             return result
 
+    def completed_status(self, run_id=None):
+        """Brief status of a completed run and its final report."""
+        query = "SELECT id,status,result FROM runs WHERE status != 'running'"
+        args = ()
+        if run_id is not None:
+            query += " AND id = ?"
+            args = (run_id,)
+        with self.lock:
+            row = self.db.execute(query + " ORDER BY updated DESC LIMIT 1", args).fetchone()
+            if row is None:
+                return None
+            run, execution, result = row
+            delivery = self.db.execute(
+                "SELECT state FROM deliveries WHERE run=? AND path LIKE '%/finish' "
+                "ORDER BY rowid DESC LIMIT 1", (run,),
+            ).fetchone()
+        result = json.loads(result)
+        evidence = result.get("evidence") if isinstance(result, dict) else None
+        summary = result.get("result_summary") if isinstance(result, dict) else None
+        return {
+            "id": run,
+            "execution": execution,
+            "verification": evidence.get("status", "unverified") if isinstance(evidence, dict) else "unverified",
+            "worker_outcome": summary.get("outcome") if isinstance(summary, dict) else None,
+            "delivery": delivery[0] if delivery else "unrecorded",
+        }
+
     def events(self, run):
         with self.lock:
             rows = self.db.execute(

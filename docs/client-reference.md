@@ -105,20 +105,26 @@ worker credentials redacted; provider error bodies remain hidden.
 
 ## Console visibility and logs
 
-Commands now print live in the terminal running `aios-client run`, `serve`, or
-`setup` (including tasks started from the setup page). The console shows the
-command/argv, working directory, shell, process ID, combined stdout/stderr, exit
-code, timeout/cancellation, milestones, errors and the task result. Records go to
-stderr, leaving CLI JSON results on stdout. Each record has a timestamp, agent
-and run ID. Output is captured as it arrives, independently of model polling;
-programs that buffer their own output may still need an unbuffered option.
+The foreground console shows when each worker is listening, waiting for
+authorization or a shared workspace, requesting a model response, using a tool,
+checking outputs, and delivering its report. Command start and exit are shown as
+separate events. The final line shows execution, configured verification, and
+delivery separately. The browser setup page shows the same live phases, including
+for standalone workers using the same configuration.
 
-The same activity is appended to `activity.log` in that agent's data directory.
-The client prints its exact path when the worker starts. View recent records with:
+Use `--verbose` with `setup`, `serve`, or `run` to stream detailed activity,
+including working directories, combined command stdout/stderr, and tool
+receipts. The client records this activity in a rotating per-agent log in either
+mode. Worker messages go to stderr, leaving CLI JSON results on stdout.
 
 ```bash
+aios-client status --agent NAME --live
 aios-client logs --agent NAME --lines 100
 ```
+
+`status --live` returns the current snapshot and latest completed run's
+execution, verification, and final delivery state. An acknowledged report means
+AIOS accepted delivery. `status` without `--live` returns the run history.
 
 With the default configuration, logs are under
 `~/.config/aios-client/client-data/agents/<agent-hash>/activity.log`.
@@ -230,9 +236,12 @@ aios-client --config ./client.json status --agent "Cortana workspace"
 aios-client --config ./client.json stop --agent "Cortana workspace"
 ```
 
-Ctrl+C stops work. A separate stop command writes a stop request checked every second
-while a run is active. An in-flight model HTTP request may take up to its configured
-timeout to return; owned commands are terminated when cancellation is observed.
+Ctrl+C requests shutdown and shows the phase being stopped. The separate
+`stop` command writes a request checked every second while a run is active.
+Owned commands are terminated when cancellation is observed. An in-flight model
+HTTP request may take up to its configured timeout to return. When shutting down
+the browser UI, the client reports any managed workers still stopping after its
+shutdown grace period.
 
 ## Coding runtime
 

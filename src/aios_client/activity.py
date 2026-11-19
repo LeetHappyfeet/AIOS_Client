@@ -20,7 +20,7 @@ def terminal_text(value):
 
 
 class ActivityLog:
-    def __init__(self, directory, agent, secrets=(), stream=None):
+    def __init__(self, directory, agent, secrets=(), stream=None, *, console=True):
         directory.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.path = directory / "activity.log"
         self.secrets = tuple(s for s in secrets if s)
@@ -35,15 +35,24 @@ class ActivityLog:
             self.path, maxBytes=5 * 1024 * 1024, backupCount=3, encoding="utf-8"
         )
         self.path.chmod(0o600)
-        console = logging.StreamHandler(sys.stderr if stream is None else stream)
-        for handler in (console, file):
+        file.setFormatter(formatter)
+        self.logger.addHandler(file)
+        if console:
+            handler = logging.StreamHandler(sys.stderr if stream is None else stream)
             handler.setFormatter(formatter)
             self.logger.addHandler(handler)
 
-    def write(self, run, kind, text):
-        value = str(text)
+    def redact(self, value):
+        value = str(value)
         for secret in self.secrets:
             value = value.replace(secret, "[REDACTED]")
+        return value
+
+    def operator_text(self, value):
+        return terminal_text(" ".join(self.redact(value).split()))[:240]
+
+    def write(self, run, kind, text):
+        value = self.redact(text)
         prefix = f"[agent={terminal_text(self.agent)} run={run}] {kind}"
         with self.lock:
             # A terminal newline ends the last line; it is not an extra empty record.

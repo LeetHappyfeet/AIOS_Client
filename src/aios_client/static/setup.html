@@ -65,8 +65,10 @@
 <small>For linked work, choose Listen and submit the bounded assignment through AIOS with the separate operator credential. The host runs these checks after the model finishes. Without required checks, completion stays unverified. Goal completion requires separate operator review in AIOS.</small>
 <button onclick="start(false)">Run task</button><button class="secondary" onclick="start(true)">Listen for AIOS work</button><button class="secondary" onclick="stop()">Stop</button>
 <small>Multiple agents can listen together. Tasks sharing a directory take turns; administration-enabled profiles reserve the host during execution. Shell commands run with this machine account's permissions. Use a dedicated development VM/container. No graphical IDE is required.</small>
+<pre id="liveStatus" aria-live="polite">Waiting for worker status…</pre>
+<details><summary>Run status details</summary>
 <button type="button" class="secondary" onclick="copyLog('status')">Copy run status</button>
-<pre id="status" aria-live="polite">No runs yet.</pre>
+<pre id="status">No runs yet.</pre></details>
 <details><summary>Latest activity</summary>
 <button type="button" class="secondary" onclick="copyLog('events')">Copy activity log</button>
 <pre id="events">Select an agent with a run.</pre></details>
@@ -139,12 +141,24 @@ async function poll(){
   try{
     const rows=await api('status');
     if(!current())return;
+    const formatRun=run=>['Last run '+run.id.slice(0,8),'Execution '+run.execution,
+      'Checks '+run.verification,run.worker_outcome?'Worker outcome '+run.worker_outcome:'',
+      'AIOS report '+run.delivery].filter(Boolean).join(' · ');
+    const summarize=row=>{
+      const live=row.live;
+      const phase=row.active?live.label+' ('+live.elapsed_seconds+'s)':row.error||live?.label||'No live worker status';
+      const work=live?.run_id?'  Run '+live.run_id.slice(0,8)+' · '+live.objective:'';
+      const commands=Object.values(live?.commands||{}).map(command=>'  Command running · '+command.command);
+      return [row.agent+' · '+phase,work,...commands,row.last_run?'  '+formatRun(row.last_run):'']
+        .filter(Boolean).join('\n');
+    };
+    showLog('liveStatus',rows.length?rows.map(summarize).join('\n\n'):'No agent profiles yet.');
     showLog('status',rows.length?JSON.stringify(rows,null,2):'No agent profiles yet.');
     const run=rows.find(x=>x.agent===agent)?.runs[0];
     if(!run){showLog('events','Select an agent with a run.');return}
     const events=await api('events?agent='+encodeURIComponent(agent)+'&run='+encodeURIComponent(run.id));
     if(current())showLog('events',JSON.stringify(events,null,2));
-  }catch(e){if(current())showLog('status',e.message)}
+  }catch(e){if(current()){showLog('liveStatus',e.message);showLog('status',e.message)}}
 }
 $('runAgent').onchange=()=>{
   showLog('events','Loading activity…');

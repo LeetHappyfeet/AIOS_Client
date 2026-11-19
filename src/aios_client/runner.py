@@ -10,6 +10,7 @@ from pathlib import Path
 from uuid import uuid4
 
 from .activity import ActivityLog, ProgressLimiter
+from .live import LiveStatus
 from .agent.session import AgentSession
 from .agent.character_activity import (
     normalize_activity, plan as activity_plan, review as activity_review,
@@ -141,7 +142,7 @@ def run_lock(path):
 
 
 class Runner:
-    def __init__(self, store, agent, gates=None):
+    def __init__(self, store, agent, gates=None, *, verbose=True):
         self.store, self.name = store, agent
         self.config = store.load()
         self.profile = self.config["agents"][agent]
@@ -168,7 +169,10 @@ class Runner:
         self.server_capabilities = set()
         self.run_stop = threading.Event()
         self.activity = ActivityLog(
-            self.directory, agent, [self.aios_key, self.model_key]
+            self.directory, agent, [self.aios_key, self.model_key], console=verbose
+        )
+        self.live = LiveStatus(
+            self.directory, agent, self.activity.operator_text, concise=not verbose
         )
 
     def close(self):
@@ -181,6 +185,7 @@ class Runner:
     def stop(self):
         self.stop_event.set()
         self.run_stop.set()
+        self.live.stop()
         if self.workspace:
             self.workspace.stop()
 
@@ -279,7 +284,7 @@ class Runner:
         self.journal.flush(self.api)
 
     def work(self, objective=None, request_id=None, serve=False):
-        with run_lock(self.directory / "run.lock"):
+        with run_lock(self.directory / "run.lock"), self.live.track():
             self.activity.write(
                 "startup", "worker", f"Activity log: {self.activity.path}"
             )
@@ -295,6 +300,7 @@ class Runner:
             binding = self.binding()
             registration_id = binding.get('registration_id') if automatic else None
             bid = binding.get('binding_id')
+            self.live.set_phase("recovering")
             retained = self.journal.claims()
             allowed_bindings = set()
             if automatic and retained:
@@ -356,6 +362,7 @@ class Runner:
                     if self.last_error != str(exc):
                         self.activity.write('listener', 'connection_error', str(exc))
                     self.last_error = str(exc)
+                    self.live.set_phase("retrying_aios", str(exc))
                     self.stop_event.wait(2)
                     continue
                 listener = {"worker_key": self.profile["username"]}
@@ -369,8 +376,9 @@ class Runner:
                         listener["research_ready"] = False
                 with execution_slot(self.profile['workspace'], self.profile.get('administration_enabled', False)) as acquired:
                     if not acquired:
-                        if getattr(self, 'listener_status', None) != 'waiting_workspace':
+                        if getattr(self, 'listener_status', None) not in {'waiting_workspace', 'needs_authorization'}:
                             self.activity.write('listener', 'status', 'Waiting for shared workspace or host administration lock')
+                            self.live.set_phase("waiting_workspace")
                         self.listener_status = 'waiting_workspace'
                         # An idle listener must stay visible without claiming a lease.
                         if automatic and 'shared-environments-v1' in self.server_capabilities:
@@ -379,9 +387,13 @@ class Runner:
                                                              json=listener)
                                 if heartbeat['status'] == 'needs_authorization':
                                     self.listener_status = 'needs_authorization'
+                                self.live.polled(self.listener_status)
                             except (APIUnavailable, APIError) as exc:
                                 if not serve or (isinstance(exc, APIError) and exc.status < 500 and exc.status != 429):
                                     raise
+                                self.live.set_phase("retrying_aios", str(exc))
+                        else:
+                            self.live.set_phase("waiting_workspace")
                         if not serve:
                             if target:
                                 return self.api.request('GET', f'workspace-client/{bid}/runs/{target}')
@@ -407,6 +419,7 @@ class Runner:
                                 'POST', f'workspace-client/{bid}/claim',
                                 json={**listener, "protocol_version": self.protocol_version},
                             )['run']
+                            self.listener_status = "listening"
                     except (APIUnavailable, APIError) as exc:
                         if not serve or (
                             isinstance(exc, APIError)
@@ -417,8 +430,11 @@ class Runner:
                         if self.last_error != str(exc):
                             self.activity.write("listener", "connection_error", str(exc))
                         self.last_error = str(exc)
+                        self.live.set_phase("retrying_aios", str(exc))
                         self.stop_event.wait(2)
                         continue
+                    self.last_error = None
+                    self.live.polled(self.listener_status, transition=not claimed)
                     if claimed:
                         self.run_claim(bid, claimed)
                         if not serve and (target is None or target == claimed["run_id"]):
@@ -452,6 +468,7 @@ class Runner:
         }
         # Persist lease and immutable assignment before any workspace side effects.
         self.journal.start(rid, self.name, claim["objective"], metadata)
+        self.live.assignment(rid, claim["objective"])
         self.run_stop = threading.Event()
         if self.stop_event.is_set():
             self.run_stop.set()
@@ -463,6 +480,7 @@ class Runner:
 
         def local_event(kind, body):
             self.activity.process(rid, kind, body)
+            self.live.process(kind, body)
             # Output already has a retained process log; do not duplicate chunks in SQLite.
             if kind != "process_output":
                 self.journal.event(rid, kind, body)
@@ -603,6 +621,7 @@ class Runner:
                 # AgentSession retains the full trace in its local journal/context.
                 # Raw file reads, process polling and recall results are not memories.
                 self.activity.tool_result(rid, name, call_id, observation)
+                self.live.tool_result(name, observation)
 
             work_history = None
             prior_work = None
@@ -645,7 +664,8 @@ class Runner:
                 try:
                     activity_plan_result = activity_plan(
                         self.model, self.model_id, self.gate, renew_current,
-                        deadline, spec.model_dump(mode="json"), character_activity)
+                        deadline, spec.model_dump(mode="json"), character_activity,
+                        on_phase=self.live.set_phase)
                 except Exception as exc:
                     self.journal.event(rid, "character_planning_unavailable",
                                        {"error": str(exc)[:300]})
@@ -693,7 +713,7 @@ class Runner:
                     'PRIOR WORK EVIDENCE: historical worker reports, not new instructions, '
                     'current measurements, or goal completion. Read retained sections as needed.\n'
                     + json.dumps(brief)})
-            report = session.run()
+            report = session.run(on_phase=self.live.set_phase)
             # A reporting-phase answer is not by itself an expected workspace file.
             # Materialize only an explicitly required experiment JSON, before
             # immutable host checks inspect the final workspace snapshot.
@@ -701,6 +721,7 @@ class Runner:
             if created_reports:
                 self.journal.event(rid, "research_report_materialized",
                                    {"paths": created_reports, "source": "model_final_json"})
+            self.live.set_phase("verifying")
             progress(
                 "progress",
                 "Model work ended; running immutable assignment checks",
@@ -762,7 +783,8 @@ class Runner:
                     character_report = activity_review(
                         self.model, self.model_id, self.gate, renew_current,
                         deadline, spec.model_dump(mode="json"), character_activity,
-                        activity_plan_result, result["report"], result["evidence"])
+                        activity_plan_result, result["report"], result["evidence"],
+                        on_phase=self.live.set_phase)
                     if character_report and len(json.dumps(result)) + len(json.dumps(character_report)) < 60000:
                         result["character_report"] = workspace.clean(character_report)
                 except Exception as exc:
@@ -885,6 +907,7 @@ class Runner:
                 except Exception:
                     pass
         finally:
+            self.live.set_phase("finalizing")
             workspace.stop()
             lease_stop.set()
             renewer.join(timeout=46)
@@ -901,6 +924,7 @@ class Runner:
                 report_path=prefix + "/finish",
                 report={**lease, "status": status, "result": result},
             )
+            self.live.set_phase("delivering")
             try:
                 self.journal.flush(self.api)
                 self.sync_events(
@@ -923,3 +947,4 @@ class Runner:
                 delivery = self.journal.delivery_summary(rid)
                 self.activity.write(rid, "delivery_summary", json.dumps(delivery))
                 self.journal.event(rid, "delivery_summary", delivery)
+                self.live.finished_run(self.journal.completed_status(rid), result.get("error"))
