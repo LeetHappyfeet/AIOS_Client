@@ -28,6 +28,7 @@ class ResearchSource(BaseModel):
     read_origins: list[str] = Field(default_factory=list, max_length=20)
     indexed: bool = False
     allow_query_fallback: bool = True
+    max_web_bytes: int = Field(default=250_000, ge=65_536, le=24 * 1024 * 1024)
     max_document_bytes: int = Field(default=12 * 1024 * 1024, ge=1024 * 1024, le=24 * 1024 * 1024)
 
     @model_validator(mode="after")

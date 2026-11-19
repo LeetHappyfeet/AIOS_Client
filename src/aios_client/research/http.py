@@ -14,33 +14,45 @@ def searxng_request(endpoint, query):
     return endpoint.rstrip("/") + "/search", {"q": query, "format": "json"}
 
 
-async def fetch(url, *, transport=None, timeout, max_bytes, accept, form=None, guard=None):
+async def fetch(url, *, transport=None, timeout, max_bytes, accept, form=None, guard=None, redirect_allowed=None):
     body = bytearray()
     try:
         async with asyncio.timeout(timeout):
             async with httpx.AsyncClient(
                 transport=transport, trust_env=False, follow_redirects=False, timeout=timeout
             ) as client:
-                async with client.stream(
-                    "POST" if form is not None else "GET", url, data=form,
-                    headers={"Accept": accept, "Accept-Encoding": "identity"},
-                ) as response:
-                    if guard is not None:
-                        guard()
-                    if response.status_code != 200:
-                        return None, None, f"http_status_{response.status_code}"
-                    if response.headers.get("content-encoding", "identity").lower() != "identity":
-                        return None, None, "encoded_response"
-                    chunks = (
-                        response.aiter_bytes() if response.is_stream_consumed else response.aiter_raw()
-                    )
-                    async for chunk in chunks:
+                for redirects in range(4):
+                    async with client.stream(
+                        "POST" if form is not None else "GET", url, data=form,
+                        headers={"Accept": accept, "Accept-Encoding": "identity"},
+                    ) as response:
                         if guard is not None:
                             guard()
-                        if len(body) + len(chunk) > max_bytes:
-                            return None, None, "response_too_large"
-                        body.extend(chunk)
-                    return bytes(body), response.headers.get("content-type", "").lower(), None
+                        if response.status_code in {301, 302, 303, 307, 308} and redirect_allowed:
+                            location = response.headers.get("location")
+                            if not location:
+                                return None, None, "redirect_missing_location"
+                            target = str(response.url.join(location))
+                            if not redirect_allowed(target):
+                                return None, None, "redirect_origin_rejected"
+                            if redirects == 3:
+                                return None, None, "redirect_limit"
+                            url = target
+                            continue
+                        if response.status_code != 200:
+                            return None, None, f"http_status_{response.status_code}"
+                        if response.headers.get("content-encoding", "identity").lower() != "identity":
+                            return None, None, "encoded_response"
+                        chunks = (
+                            response.aiter_bytes() if response.is_stream_consumed else response.aiter_raw()
+                        )
+                        async for chunk in chunks:
+                            if guard is not None:
+                                guard()
+                            if len(body) + len(chunk) > max_bytes:
+                                return None, None, "response_too_large"
+                            body.extend(chunk)
+                        return bytes(body), response.headers.get("content-type", "").lower(), None
     except (httpx.HTTPError, httpx.InvalidURL, OSError, TimeoutError) as exc:
         # Exception messages can contain request URLs.
         return None, None, type(exc).__name__

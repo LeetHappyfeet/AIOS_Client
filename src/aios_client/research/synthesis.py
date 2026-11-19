@@ -31,6 +31,8 @@ def compact_synthesis_messages(spec, tools):
             "title": row.get("title"),
             "section": row.get("section"),
             "passage_excerpt": str(row.get("passage_excerpt") or "")[:420],
+            **{key: row[key] for key in ("cursor", "end_cursor", "passage_excerpt_tail", "web_coverage")
+               if key in row},
         })
     audit = list(getattr(tools, "search_audit", []))[-12:]
     brief = {
@@ -40,6 +42,7 @@ def compact_synthesis_messages(spec, tools):
         "pdf_coverage": list(tools.control.pdf_coverage.values())[-8:],
         "search_count": tools.control.searches,
         "attempted_acquisitions": tools.control.acquisitions,
+        "acquisition_errors": list(tools.control.acquisition_errors.values())[-8:],
         "unread_candidates": [
             {"title": x.get("title"), "source_id": x.get("source_id")}
             for x in tools.control.candidates[-8:]
@@ -80,6 +83,7 @@ def merge_research_report(spec, tools, report):
     data["objective"] = str(getattr(spec, "objective", "Research assignment"))
     data["search_log"] = list(getattr(tools, "search_audit", []))
     data["research_progress"] = tools.control.snapshot()
+    data["acquisition_errors"] = list(tools.control.acquisition_errors.values())[-8:]
     data.setdefault("findings", [])
     data.setdefault("artifacts", [])
     data.setdefault("requested_content", [])
@@ -111,7 +115,7 @@ def merge_research_report(spec, tools, report):
     incomplete_statuses = {"source_error", "source_unhealthy", "partial_results", "query_rejected"}
     unresolved = any(row.get("status") in incomplete_statuses or row.get("errors")
                      for row in data["search_log"])
-    incomplete_coverage = unresolved or any(
+    incomplete_coverage = bool(data["acquisition_errors"]) or unresolved or any(
         row.get("status") == "read_recommended" or row.get("full_text_error")
         for row in data["search_log"]
     )
@@ -131,6 +135,6 @@ def merge_research_report(spec, tools, report):
                 "Some source searches were unsuccessful or unattempted; "
                 "whole-library coverage remains unknown."
             )
-        if unresolved and data["outcome"] == "completed":
+        if (unresolved or data["acquisition_errors"]) and data["outcome"] == "completed":
             data["outcome"] = "partial"
     return json.dumps(data, ensure_ascii=False)

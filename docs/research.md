@@ -567,3 +567,41 @@ layer require OCR outside this workflow.
 Restage after replacing the Calibre PDF to update the snapshot in new
 research runs. Remove an index with
 `aios-client unstage-calibre-pdf --source calibre --catalog-id 'urn:uuid:your-book-id'`.
+
+## SearXNG result reading and retained evidence
+
+SearXNG sources can set `max_web_bytes` for HTML, plain text, and PDF result
+downloads. The default is 250,000 bytes. The operator may choose 65,536
+bytes through 24 MiB, either in the source registry or using the setup
+screen's **Web page / PDF download limit (MiB)** field. Search JSON responses
+retain their separate 128 KiB limit. For example:
+
+```json
+{
+  "id": "web",
+  "adapter": "searxng",
+  "endpoint": "http://search.lan:8080",
+  "read_origins": ["https://survey.example"],
+  "max_web_bytes": 12582912
+}
+```
+
+Restart listeners after saving source settings. Every result read and redirect
+destination requires an approved origin. The web reader follows at most three
+redirects within its request deadline. Failed downloads, denied origins, empty
+extractions and unsupported media types are retained in research progress and
+provided to synthesis. Repeated reads of a failed URL reuse its failure.
+
+Successful downloads are extracted once per source and URL per run. Later
+cursor reads reuse that snapshot and hash. Each web passage records a range,
+such as `web_document@2000-4000` or `page:4@0-1500`, so distinct passages
+survive synthesis and citation checks. Excerpts prefer matches to the search
+query and also retain a short tail. Coverage reports downloaded bytes,
+searchable sections, extracted character count and extraction limitations.
+An excerpt represents text actually returned by a read.
+
+HTML and plain-text extraction is bounded to 250,000 input characters.
+PDF extraction uses the existing text-layer reader with its page and text
+limits, and reports those limits when reached. Images and JavaScript-rendered
+content require additional tooling. Search excerpts alone cannot establish a
+read citation.

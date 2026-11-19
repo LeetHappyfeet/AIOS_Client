@@ -222,8 +222,13 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                     continue
                 seen.add(pair)
                 item = shallow(passage, ("evidence_id", "source_id", "title",
-                                        "section", "document_sha256"))
-                item["passage_excerpt"] = text(passage.get("passage_excerpt"), 280)
+                                        "section", "document_sha256", "cursor", "end_cursor"))
+                item["passage_excerpt"] = text(passage.get("passage_excerpt"), 320)
+                if isinstance(passage.get("passage_excerpt_tail"), str):
+                    item["passage_excerpt_tail"] = text(passage["passage_excerpt_tail"], 180)
+                if isinstance(passage.get("web_coverage"), dict):
+                    item["web_coverage"] = shallow(passage["web_coverage"], (
+                        "download_bytes", "searchable_sections", "extracted_characters", "extraction_limited"))
                 retained.append(item)
             result["research_progress"] = {
                 "searches": progress.get("searches", 0),
