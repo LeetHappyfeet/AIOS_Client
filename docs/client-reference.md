@@ -256,6 +256,15 @@ for tool inputs, recovery limits, and the Windows/Linux terminal adapter roadmap
 
 ## Coding behavior and records
 
+Goal-linked v3 assignments can resume from an AIOS project notebook when the
+server advertises `workspace-notebook-v1`. The worker receives a compact summary
+and recent notes at startup. It can use `aios_notebook_recent` or
+`aios_notebook_search` to retrieve more, and `aios_notebook_append` to save a
+decision, dead end, or next step while the run is live. Inspection-only
+assignments have read access. A research checkpoint can include an evidence ID
+from a passage read during the run. The stored locator identifies the source
+receipt to consult when verifying a claim.
+
 V3 adds `aios_recall(query)` for permitted character recall during execution and
 `aios_progress(kind, summary)` for milestones or blocked reasons.
 

@@ -26,6 +26,8 @@ from .reporting import result_summary, stage_memory
 from .research.sources import load_sources
 from .research.bridge import register as register_research_bridge
 from .research.finalize import materialize_research_report
+from .tools.notebook import CAPABILITY as WORKSPACE_NOTEBOOK, GUIDANCE as NOTEBOOK_GUIDANCE
+from .tools.notebook import register as register_notebook_tools
 from .tools.recall import RemoteTools
 from .verification import bounded_text, snapshot, verify
 from .workspace import Workspace
@@ -659,6 +661,38 @@ class Runner:
                         json={**lease, **payload},
                     ),
                 )
+            notebook_brief = None
+            has_notebook = (
+                self.protocol_version == 3
+                and WORKSPACE_NOTEBOOK in self.server_capabilities
+                and spec.goal_id is not None
+                and claim.get("environment_link_id") is not None
+            )
+            if has_notebook:
+                def notebook_request(operation, payload, *, timeout=None):
+                    return self.api.request(
+                        "POST", v3_prefix + "/notebook/" + operation,
+                        json={**payload, **lease}, **({"timeout": timeout} if timeout else {}),
+                    )
+
+                try:
+                    brief_budget = min(4, deadline - time.monotonic())
+                    notebook_brief = (
+                        notebook_request("brief", {}, timeout=brief_budget)
+                        if brief_budget > 0 else {"status": "unavailable"}
+                    )
+                except APIUnavailable:
+                    notebook_brief = {"status": "unavailable"}
+                except APIError as exc:
+                    if exc.status not in {403, 404, 405, 408, 409, 429, 500, 502, 503, 504}:
+                        raise
+                    if exc.status in {403, 409}:
+                        # A stopped or stale workspace cannot continue execution.
+                        renew_current()
+                        has_notebook = False
+                    notebook_brief = {"status": "unavailable", "http_status": exc.status}
+                if has_notebook:
+                    register_notebook_tools(workspace.registry, notebook_request, workspace, rid)
             activity_plan_result = None
             if character_activity:
                 try:
@@ -674,7 +708,11 @@ class Runner:
                 model_id=self.model_id,
                 workspace=workspace,
                 spec=spec,
-                system=SYSTEM + (RESEARCH_GUIDANCE if workspace.registry.tool_mode == "research" else "") + (MEMORY_GUIDANCE if compact else ""),
+                system=(
+                    SYSTEM + (RESEARCH_GUIDANCE if workspace.registry.tool_mode == "research" else "")
+                    + (MEMORY_GUIDANCE if compact else "")
+                    + (NOTEBOOK_GUIDANCE if has_notebook else "")
+                ),
                 # With an activity brief, narrative identity/context is used in
                 # planning and review ONLY. The execution loop receives its
                 # technical plan and can retrieve factual evidence through tools.
@@ -692,6 +730,10 @@ class Runner:
                 progress=progress,
                 observe=observe,
             )
+            if notebook_brief is not None:
+                session.context.append({"role": "user", "content":
+                    "PROJECT NOTEBOOK RESUME BRIEF. Treat this as attributed working material.\n"
+                    + json.dumps(notebook_brief, ensure_ascii=False)})
             if activity_plan_result:
                 # Only the technical plan enters the execution loop. The narrative
                 # brief remains outside its pinned prompts and repeated tool calls.
