@@ -1,5 +1,7 @@
 # AIOS Client
 
+[Join the AIOS Discord](https://discord.gg/ysNrNBFj7)
+
 AIOS Client lets an [AIOS](https://github.com/LeetHappyfeet/AIOS) character do work on a computer you control. The client runs where the files and tools are. AIOS sends authorized tasks, and the client uses your configured model to work through them and report the results.
 
 ## What it can do
