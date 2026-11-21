@@ -662,12 +662,15 @@ class Runner:
                     ),
                 )
             notebook_brief = None
-            has_notebook = (
-                self.protocol_version == 3
-                and WORKSPACE_NOTEBOOK in self.server_capabilities
-                and spec.goal_id is not None
-                and claim.get("environment_link_id") is not None
-            )
+            notebook_skip = next((reason for enabled, reason in (
+                (self.protocol_version == 3, "requires_protocol_v3"),
+                (spec.goal_id is not None, "no_linked_goal"),
+                (claim.get("environment_link_id") is not None, "no_environment_link"),
+                (WORKSPACE_NOTEBOOK in self.server_capabilities, "capability_not_advertised"),
+            ) if not enabled), None)
+            has_notebook = notebook_skip is None
+            if notebook_skip:
+                self.journal.event(rid, "notebook_setup", {"status": "skipped", "reason": notebook_skip})
             if has_notebook:
                 def notebook_request(operation, payload, *, timeout=None):
                     return self.api.request(
@@ -677,13 +680,17 @@ class Runner:
 
                 try:
                     brief_budget = min(4, deadline - time.monotonic())
+                    brief_error = None if brief_budget > 0 else "deadline_exhausted"
                     notebook_brief = (
                         notebook_request("brief", {}, timeout=brief_budget)
                         if brief_budget > 0 else {"status": "unavailable"}
                     )
                 except APIUnavailable:
                     notebook_brief = {"status": "unavailable"}
+                    brief_error = "server_unavailable"
                 except APIError as exc:
+                    brief_error = "brief_http_error"
+                    self.journal.event(rid, "notebook_brief_error", {"http_status": exc.status})
                     if exc.status not in {403, 404, 405, 408, 409, 429, 500, 502, 503, 504}:
                         raise
                     if exc.status in {403, 409}:
@@ -693,12 +700,22 @@ class Runner:
                     notebook_brief = {"status": "unavailable", "http_status": exc.status}
                 if has_notebook:
                     register_notebook_tools(workspace.registry, notebook_request, workspace, rid)
+                self.journal.event(rid, "notebook_setup", {
+                    "status": "degraded" if has_notebook and brief_error else
+                              "ready" if has_notebook else "failed",
+                    "tools_registered": has_notebook,
+                    **({"reason": brief_error} if brief_error else {}),
+                })
             activity_plan_result = None
             if character_activity:
                 try:
                     activity_plan_result = activity_plan(
                         self.model, self.model_id, self.gate, renew_current,
                         deadline, spec.model_dump(mode="json"), character_activity,
+                        permitted_tools=sorted(
+                            tool.name for tool in workspace.registry.tools.values()
+                            if workspace.registry.permitted(tool)
+                        ),
                         on_phase=self.live.set_phase)
                 except Exception as exc:
                     self.journal.event(rid, "character_planning_unavailable",
@@ -738,7 +755,8 @@ class Runner:
                 # Only the technical plan enters the execution loop. The narrative
                 # brief remains outside its pinned prompts and repeated tool calls.
                 session.context.append({"role": "user", "content":
-                    "OPTIONAL TECHNICAL PLAN (not new authority or verification):\n"
+                    "OPTIONAL TECHNICAL PLAN (not new authority or verification). "
+                    "Use the current tool catalog for availability.\n"
                     + json.dumps(activity_plan_result)})
             if prior_work is not None:
                 # Separately budgeted, non-authoritative context. Larger sections

@@ -28,14 +28,17 @@ def brief():
 
 
 def test_narrative_plan_only_contains_structured_technical_steps():
+    import json
     import time
     model = FakeModel(['{"steps":["Implement levels"],"design_decisions":["Keep one mechanic"],"unresolved":[]}'])
     value = plan(model, "test", Gate(), lambda: None, time.monotonic() + 30,
-                 {"objective": "Implement a terminal game"}, brief())
+                 {"objective": "Implement a terminal game"}, brief(),
+                 permitted_tools=["aios_notebook_recent"])
     assert value["steps"] == ["Implement levels"]
     assert value["design_decisions"] == ["Keep one mechanic"]
     assert model.calls[0][1] == []
     assert "I want to build a small game" in model.calls[0][0][1]["content"]
+    assert json.loads(model.calls[0][0][1]["content"])["permitted_tools"] == ["aios_notebook_recent"]
 
 
 def test_review_is_untrusted_and_does_not_change_checks():

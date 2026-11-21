@@ -93,9 +93,20 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
     match the immutable-check snapshot; their statements remain worker claims.
     Never follow artifact paths supplied by the model to collect more files.
     """
+    research_mode = getattr(workspace.registry, "tool_mode", None) == "research"
     selected = getattr(workspace, "published_result", None)
-    value = dict(selected) if selected is not None else _object(report)
+    final = _object(report)
+    value = dict(selected) if selected is not None else final
     source = "publish_result" if selected is not None else "final_response"
+    if selected is not None and research_mode and final is not None:
+        # Research finalization has already applied the host's coverage checks.
+        # Keep the staged findings and their indexed citations together.
+        value["outcome"] = final["outcome"]
+        final_limitations = final["limitations"]
+        value["limitations"] = [
+            *final_limitations,
+            *(item for item in selected["limitations"] if item not in final_limitations),
+        ]
     source_hash = None
     if value is None:
         manifest = workspace.artifacts / "manifest.json"
@@ -201,7 +212,7 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
     # Retain just enough run-local research observations for a character to
     # inspect a partial or truncated report without requesting new execution.
     # These are worker-supplied excerpts, never verified scientific findings.
-    if getattr(workspace.registry, "tool_mode", None) == "research":
+    if research_mode:
         def shallow(value, keys, max_len=240):
             if not isinstance(value, dict):
                 return {}

@@ -74,6 +74,14 @@ def test_worker_notebook_tools_and_resume_brief(tmp_path, monkeypatch, advertise
         assert runner.work()["status"] == "finished"
         assert len(service.bodies("/notebook/brief")) == int(enabled)
         assert len(service.bodies("/notebook/append")) == int(enabled)
+        setup = next(event["body"] for event in runner.journal.events(service.rid)
+                     if event["kind"] == "notebook_setup")
+        if enabled:
+            assert setup["status"] == ("ready" if brief_status == 200 else "degraded")
+            assert setup["tools_registered"] is True
+        else:
+            assert setup == {"status": "skipped",
+                             "reason": "no_linked_goal" if not linked else "capability_not_advertised"}
     finally:
         runner.close()
 
