@@ -47,9 +47,11 @@ def html_text(data: str):
     return parser.text()
 
 
-def extract_document(data: bytes, kind: str):
+def extract_document(data: bytes, kind: str, *, max_bytes: int = MAX_DOCUMENT):
     """Return (sections, limitations), never execute embedded content."""
-    if len(data) > MAX_DOCUMENT:
+    if max_bytes > 24 * 1024 * 1024 or max_bytes < 1024 * 1024:
+        return [], ["document_limit_invalid"]
+    if len(data) > max_bytes:
         return [], ["document_too_large"]
     if kind in {".txt", ".md", ".rst", ".json", ".csv"}:
         try:
@@ -73,11 +75,16 @@ def extract_document(data: bytes, kind: str):
             try:
                 reader = PdfReader(io.BytesIO(data), strict=False)
                 sections = []
+                remaining = MAX_EXTRACTED_CHARS
+                limitations = ["page_limit"] if len(reader.pages) > MAX_PAGES else []
                 for i, page in enumerate(reader.pages[:MAX_PAGES], 1):
-                    text = (page.extract_text() or "")[:8000]
+                    if remaining <= 0:
+                        limitations.append("text_limit")
+                        break
+                    text = (page.extract_text() or "")[:min(8000, remaining)]
                     if text.strip():
                         sections.append((f"page:{i}", text))
-                limitations = ["page_limit"] if len(reader.pages) > MAX_PAGES else []
+                        remaining -= len(text)
                 if not sections:
                     limitations.append("no_extractable_text")
                 return sections, limitations
@@ -88,11 +95,12 @@ def extract_document(data: bytes, kind: str):
     if kind == ".epub":
         try:
             result = []
+            remaining = MAX_EXTRACTED_CHARS
             with zipfile.ZipFile(io.BytesIO(data)) as archive:
                 if len(archive.infolist()) > 2000:
                     return [], ["epub_entry_limit"]
                 for item in archive.infolist():
-                    if len(result) >= MAX_PAGES:
+                    if len(result) >= MAX_PAGES or remaining <= 0:
                         break
                     if (item.filename.lower().endswith((".xhtml", ".html", ".htm"))
                         and not item.is_dir() and item.file_size <= 256_000):
@@ -101,8 +109,15 @@ def extract_document(data: bytes, kind: str):
                             continue
                         extracted = html_text(content.decode("utf-8", "replace"))
                         if extracted:
-                            result.append((item.filename[:240], extracted[:8000]))
-                return result, (["section_limit"] if len(result) >= MAX_PAGES else [])
+                            excerpt = extracted[:min(8000, remaining)]
+                            result.append((item.filename[:240], excerpt))
+                            remaining -= len(excerpt)
+                limits = []
+                if len(result) >= MAX_PAGES:
+                    limits.append("section_limit")
+                if remaining <= 0:
+                    limits.append("text_limit")
+                return result, limits
         except (OSError, ValueError, zipfile.BadZipFile, RuntimeError):
             return [], ["epub_extraction_failed"]
     return [], ["unsupported_format"]

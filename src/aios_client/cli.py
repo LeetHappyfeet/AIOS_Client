@@ -11,8 +11,60 @@ from urllib.parse import urlsplit
 
 from .config import ConfigStore
 from .journal import Journal
+from .live import console_line, read_live
 from .runner import Runner, agent_dir
 from .ui_settings import UISettings, password_hash, remote_ui, validate_ui
+
+
+def serve_ui(store, settings, *, verbose):
+    import uvicorn
+
+    from .server import create_app
+
+    address = ipaddress.ip_address(settings["host"])
+    host = f"[{address}]" if address.version == 6 else str(address)
+    bind = f"{host}:{settings['port']}"
+
+    class Server(uvicorn.Server):
+        async def startup(self, sockets=None):
+            try:
+                await super().startup(sockets=sockets)
+            except SystemExit:
+                console_line(
+                    f"Browser UI failed to start on {bind}. "
+                    "Check the error above and whether another client is already listening."
+                )
+                raise
+            if self.started:
+                print(f"AIOS Client ready: {settings['public_url']}", flush=True)
+                if settings["password_hash"]:
+                    console_line("UI login: admin (use the password saved by configure-ui)")
+                if not address.is_loopback and settings["public_url"].startswith("http:"):
+                    console_line(
+                        "HTTP remote access is for a trusted private network; "
+                        "use HTTPS or a VPN on untrusted networks."
+                    )
+
+        async def shutdown(self, sockets=None):
+            console_line("Stopping browser UI and its workers")
+            await super().shutdown(sockets=sockets)
+            console_line("Browser UI stopped")
+
+    config = uvicorn.Config(
+        create_app(store, settings["port"], ui_settings=settings, verbose=verbose),
+        host=settings["host"],
+        port=settings["port"],
+        ssl_certfile=settings["tls_certfile"],
+        ssl_keyfile=settings["tls_keyfile"],
+        proxy_headers=False,
+        access_log=False,
+        log_level="info" if verbose else "warning",
+    )
+    try:
+        Server(config).run()
+    except KeyboardInterrupt:
+        # Newer Uvicorn versions replay the signal after graceful shutdown.
+        pass
 
 
 def main():
@@ -24,6 +76,7 @@ def main():
     setup = sub.add_parser(
         "setup", help="Start the saved local or authenticated remote UI"
     )
+    setup.add_argument("--verbose", action="store_true", help="Stream detailed activity")
     for command in (
         setup,
         sub.add_parser(
@@ -68,15 +121,42 @@ def main():
         p.add_argument("--agent", required=True)
         if name == "logs":
             p.add_argument("--lines", type=int, default=100)
+        if name == "status":
+            p.add_argument("--live", action="store_true", help="Show worker and latest completed run")
+        if name in ("run", "serve"):
+            p.add_argument("--verbose", action="store_true", help="Stream detailed activity")
         if name == "run":
             p.add_argument("--task-file", type=Path, required=True)
             p.add_argument(
                 "--request-id",
                 help="Reuse an assignment request ID after an uncertain submission",
             )
+    stage = sub.add_parser("stage-calibre-pdf", help="Index a Calibre PDF export")
+    unstage = sub.add_parser("unstage-calibre-pdf", help="Remove a staged PDF index")
+    for command in (stage, unstage):
+        command.add_argument("--source", required=True)
+        command.add_argument("--catalog-id", required=True, help="Exact OPDS entry ID")
+    stage.add_argument("--pdf", required=True, type=Path)
+    stage.add_argument("--max-mib", type=int, default=128)
+    stage.add_argument("--max-pages", type=int, default=1000)
+    stage.add_argument("--timeout", type=int, default=300, help="Extraction seconds")
     args = parser.parse_args()
     store = ConfigStore(args.config)
     try:
+        if args.command in ("stage-calibre-pdf", "unstage-calibre-pdf"):
+            from .research.sources import load_sources
+            from .research.staged_pdf import stage_pdf, unstage_pdf
+
+            source, = load_sources(store.path.parent / "research_sources.json", [args.source])
+            directory = store.data_dir / "staged-calibre-pdfs"
+            if args.command == "stage-calibre-pdf":
+                result = stage_pdf(directory, source, args.catalog_id, args.pdf.expanduser(),
+                                   max_bytes=args.max_mib * 1024 * 1024,
+                                   max_pages=args.max_pages, timeout=args.timeout)
+                print(json.dumps(result, indent=2))
+            else:
+                unstage_pdf(directory, source, args.catalog_id)
+            return
         if args.command in ("configure-ui", "setup"):
             ui_store = UISettings(store.path)
             settings = ui_store.load()
@@ -118,28 +198,7 @@ def main():
                 return
             settings = validate_ui(settings)
         if args.command == "setup":
-            import uvicorn
-
-            from .server import create_app
-
-            print(f"AIOS Client setup: {settings['public_url']}")
-            if settings["password_hash"]:
-                print("UI login: admin (use the password saved by configure-ui)")
-            if not ipaddress.ip_address(settings["host"]).is_loopback and settings[
-                "public_url"
-            ].startswith("http:"):
-                print(
-                    "HTTP remote access is for a trusted private network; use HTTPS or a VPN on untrusted networks."
-                )
-            uvicorn.run(
-                create_app(store, settings["port"], ui_settings=settings),
-                host=settings["host"],
-                port=settings["port"],
-                ssl_certfile=settings["tls_certfile"],
-                ssl_keyfile=settings["tls_keyfile"],
-                proxy_headers=False,
-                access_log=False,
-            )
+            serve_ui(store, settings, verbose=args.verbose)
             return
         if args.command == "doctor":
             from .diagnostics import doctor
@@ -175,9 +234,18 @@ def main():
                 print("No activity logged yet")
             return
         if args.command == "status":
-            journal = Journal(agent_dir(store, args.agent) / "journal.sqlite3")
-            print(json.dumps(journal.status(), indent=2))
-            journal.db.close()
+            directory = agent_dir(store, args.agent)
+            journal = Journal(directory / "journal.sqlite3")
+            try:
+                status = (
+                    {"agent": args.agent, "live": read_live(directory),
+                     "last_run": journal.completed_status(),
+                     "log_path": str(directory / "activity.log")}
+                    if args.live else journal.status()
+                )
+                print(json.dumps(status, indent=2))
+            finally:
+                journal.db.close()
             return
         if args.command == "stop":
             p = agent_dir(store, args.agent) / "stop"
@@ -187,7 +255,7 @@ def main():
                 "Stop requested; active commands will be terminated at the next control check."
             )
             return
-        runner = Runner(store, args.agent)
+        runner = Runner(store, args.agent, verbose=getattr(args, "verbose", True))
         try:
             if args.command == "check":
                 binding = runner.binding()

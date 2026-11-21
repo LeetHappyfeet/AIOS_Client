@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import json
 import stat
+
+import pytest
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -34,16 +36,17 @@ def make_spec(paths=(NAME,), inspection=False):
     )
 
 
-def test_required_report_is_written_and_readable_for_host_verification(tmp_path):
+@pytest.mark.parametrize("name", [NAME, NAME.replace("experiment", "work-report")])
+def test_required_report_is_written_and_readable_for_host_verification(tmp_path, name):
     workspace = make_workspace(tmp_path)
-    spec = make_spec()
-    assert materialize_research_report(workspace, spec, REPORT) == [NAME]
-    data = json.loads((tmp_path / NAME).read_text())
+    spec = make_spec((name,))
+    assert materialize_research_report(workspace, spec, REPORT) == [name]
+    data = json.loads((tmp_path / name).read_text())
     assert data["objective"] == "Use only Calibre"
     assert data["outcome"] == "partial"
     assert data["evidence"] == []
     assert isinstance(data["limitations"], list)
-    assert stat.S_IMODE((tmp_path / NAME).stat().st_mode) == 0o600
+    assert stat.S_IMODE((tmp_path / name).stat().st_mode) == 0o600
     assert materialize_research_report(workspace, spec, REPORT) == []
 
 

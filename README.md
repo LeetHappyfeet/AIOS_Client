@@ -1,93 +1,58 @@
 # AIOS Client
 
-AIOS Client lets an [AIOS](https://github.com/LeetHappyfeet/AIOS) character carry out
-tasks on a computer. It uses an OpenAI-compatible model to read and edit files,
-search a project, run terminal commands, and check the results.
+[Join the AIOS Discord](https://discord.gg/ysNrNBFj7)
 
-It runs on the machine where the work happens, with a browser-based setup page.
-AIOS and the model provider can run elsewhere.
+AIOS Client lets an [AIOS](https://github.com/LeetHappyfeet/AIOS) character do work on a computer you control. The client runs where the files and tools are. AIOS sends authorized tasks, and the client uses your configured model to work through them and report the results.
 
-## How it connects
+## What it can do
 
-AIOS authorizes and routes a work request. The client polls AIOS for assignments,
-runs the task in your chosen workspace, and sends back progress, a result summary,
-and verification evidence. Detailed command output and logs stay on the client.
+- **Workspace tasks** — search and edit files, inspect Git changes, run terminal commands, and verify expected outputs.
+- **Research** — search your configured SearXNG, Calibre, and local document sources, and cite passages it reads. You choose which sources each agent can use.
+- **Project notebooks** — pick up decisions and next steps from earlier attempts on the same goal when your AIOS server supports workspace notebooks.
+- **Run monitoring** — follow progress, verification, and report delivery in the browser or terminal. Multiple agent profiles can listen at once.
 
-You need:
+## How it compares with ChatGPT and Grok
 
-- A running AIOS server with workspace support and its workspace API key.
-- An existing AIOS character and a dedicated execution session.
-- An OpenAI-compatible model with native tool calling, plus its API key if required.
+Like ChatGPT and Grok, AIOS Client gives a model tools to search for information and run code. ChatGPT and Grok offer hosted tools, and their desktop products can also work with local files. [ChatGPT](https://help.openai.com/en/articles/6825453-chatgpt-for-developers) · [Grok tools](https://docs.x.ai/developers/tools/overview) · [Grok Bot](https://docs.x.ai/grok-bot/security)
 
-For chat-driven work, link the execution session to the conversational session and
-enable the allowed capabilities in AIOS. Installing the client does not configure
-those server-side permissions. See [AIOS pairing](docs/v3-integration.md).
+With AIOS Client, you host the worker and choose its model and research sources. Install it on a spare Ubuntu PC or virtual machine and chat from another device. Once you authorize the workspace in AIOS, the character can run commands, edit files, and verify results on that computer using the Linux account that runs the client.
 
 ## Install on Ubuntu
 
-Start with Git, Python 3, and Python's venv package installed. Run these commands
-as the ordinary account that will own the client:
+You’ll need a running AIOS server with workspace support, an existing AIOS character, and the server’s workspace API key. For automatic chat routing, update AIOS and apply its workspace-registration migration before setup. You’ll also need a model that supports tool calling through an OpenAI-compatible API. Have its base URL, model ID, and API key if required.
+
+On the computer that will do the work, install the prerequisites from an administrator account:
 
 ```bash
-git clone --branch main https://github.com/LeetHappyfeet/AIOS_Client.git
+sudo apt update
+sudo apt install -y git python3 python3-venv
+```
+
+Then open a terminal as the ordinary Linux user that will run the client:
+
+```bash
+git clone --branch development https://github.com/LeetHappyfeet/AIOS_Client.git
 cd AIOS_Client
 bash install.sh --local-only
 ~/.local/bin/aios-client setup
 ```
 
-The installer creates the Python environment and launcher, obtaining Python 3.12
-if a suitable Python 3.11+ is unavailable. Open **http://127.0.0.1:8765** on that
-machine.
+The installer needs internet access to install dependencies. It creates a private Python environment and downloads Python 3.12 if Python 3.11 or newer is unavailable. Open <http://127.0.0.1:8765> on that computer. To start the client again later, run `~/.local/bin/aios-client setup`.
 
-**Installing on a VM or headless server?** Instead of `--local-only`, use
-`--remote-url http://YOUR_VM_IP:8765`. Choose a setup password, start setup with
-the same command above, then open that URL from your computer and sign in as
-**admin**. Use HTTP only on a trusted private network; see the
-[installation guide](docs/installation.md) for HTTPS, SSH tunnels, updates, and
-background services.
+**Using a VM or a server without a desktop?** Replace the install command with `bash install.sh --remote-url http://YOUR_SERVER_IP:8765`, using the server’s actual IP address. Choose a setup password, then run the same setup command and sign in as **admin** at that address. Use plain HTTP only on a trusted private network. The [installation guide](docs/installation.md) covers SSH tunnels, HTTPS, and background services.
 
-Commands run with the client account's permissions. Use a dedicated ordinary
-account or VM; the workspace folder does not sandbox terminal commands.
+Use a dedicated Linux account without sudo. Terminal commands have that account’s permissions and can reach files outside the selected workspace.
 
 ## Connect and run your first task
 
-1. **AIOS connection:** enter your server address and workspace API key, save,
-   then test the connection.
-2. **Model endpoint:** enter the provider's base URL (usually ending in `/v1`),
-   model ID, and provider key if required. Save and test tool calling.
-3. **Agent profile:** enter the character ID and a writable workspace. Use
-   **Find existing AIOS sessions** to select the execution session, then save
-   and validate the binding.
-4. Choose **Listen for AIOS work** to receive assignments, or **Run task** for
-   a task entered in setup. Start small and include a required check so the
-   client can verify the result.
-
-On headless Linux, choose **Private local file** to save keys. The AIOS workspace
-key and model-provider key are separate credentials.
-
-Commands and results appear in the terminal running the client. Use **Stop** to
-cancel work. A finished run alone does not mean its checks passed.
+1. Under **AIOS connection**, enter the AIOS server address and workspace API key. Choose **Save connection**, then **Test connection**.
+2. Under **Generation endpoint**, enter the model’s base URL, model ID, and provider key if required. Choose **Save endpoint**, then **Test generation & tools**. On a server without an OS keyring, choose **Private local file** when saving keys.
+3. Under **Agent profile**, keep **Automatic chat routing** selected. Enter a profile name, a worker label, the exact AIOS character ID, the human routing key AIOS uses for your chats, and a writable workspace folder. Leave the scope at `conversation` for ordinary chats. Select the saved connections, then choose **Save agent**, **Register / validate workspace**, and **Listen for AIOS work**.
+4. In AIOS, open **Workspace Delegation**, refresh the registered workspaces, and authorize this worker and folder for current and future chats. Choose an execution policy. Leave the listener running.
+5. Open a new chat with the matching character and try a small task. For example, ask it to create `hello.txt` containing `Hello from AIOS` and verify the file’s contents. Check the run status for the verification result.
 
 ## More help
 
-- [Installation and remote setup](docs/installation.md)
-- [Credentials, logs, CLI commands, and verification](docs/client-reference.md)
-- [AIOS pairing and delegation](docs/v3-integration.md)
-- [Runtime tools and development](docs/coding-runtime.md)
-- [Research sources (SearXNG, Calibre and local files)](docs/research.md)
-
-### New chats without manual pairing
-
-With an updated AIOS server and its workspace-registration migration, select
-**Automatic chat routing** in the client. Save the character, human routing key,
-workspace and connections, then **Register / validate workspace** and **Listen for
-AIOS work**. Authorize that registered workspace once in AIOS Gradio → Workspace
-Delegation. Future matching chats attach automatically; no session/instance/link
-UUID copying is required. Existing manual profiles are preserved. See
-[automatic routing](docs/client-reference.md#automatic-routing-for-new-chats).
-
-Multiple saved agents can listen at once, including different characters using the
-same directory. Shared-directory tasks take turns; independent POSIX workspaces can
-run concurrently. Administration-enabled profiles reserve the host during execution.
-See [shared environment setup](docs/client-reference.md#shared-host-and-workspace-coordination)
-for the AIOS migration and upgrade steps.
+- [Automatic routing, existing profiles, and troubleshooting](docs/client-reference.md#automatic-routing-for-new-chats)
+- [Research source setup and permissions](docs/research.md#configure-sources-from-the-setup-page-or-a-json-file)
+- [Notebook support](docs/client-reference.md#coding-behavior-and-records)

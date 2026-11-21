@@ -25,10 +25,13 @@
 <label>Provider<select id="sAdapter" onchange="sourceVisibility()"><option value="searxng">SearXNG search</option><option value="calibre_opds">Calibre OPDS</option><option value="local_documents">Local documents</option><option value="local_text">Local text</option></select></label>
 <label>Priority (lower first)<input id="sPriority" type="number" min="0" max="1000" value="100"></label>
 <label class="wide" id="sNetwork">Network service URL<input id="sEndpoint" placeholder="http://192.168.1.50:8080"></label>
+<label id="sWebLimit" hidden>Web page / PDF download limit (MiB)<input id="sWebMiB" type="number" min="0.0625" max="24" step="any" value="0.2384185791015625"></label>
+<label id="sDocumentLimit" hidden>Ordinary Calibre download limit (MiB)<input id="sDocumentMiB" type="number" min="1" max="24" step="any" value="12"></label>
 <label class="wide" id="sLocal" hidden>Approved absolute folder<input id="sRoot" placeholder="/srv/books"></label>
 <label>Enabled<select id="sEnabled"><option value="true">Enabled</option><option value="false">Disabled</option></select></label>
 <label>Indexed local documents<select id="sIndexed"><option value="false">No</option><option value="true">Yes (local documents only)</option></select></label>
 <label class="wide">Topic hints (one lowercase ID per line)<textarea id="sTopics" rows="2" placeholder="general"></textarea></label>
+<label id="sFallbackLabel">Accept automatic fallback queries<select id="sFallback"><option value="true">Yes</option><option value="false">No</option></select></label>
 <label class="wide" id="sOriginsLabel">Web-page read origins (SearXNG only; one exact origin per line)<textarea id="sOrigins" rows="2" placeholder="https://www.example.org"></textarea></label>
 </div>
 <div class="actions"><button onclick="saveSource()">Save research source</button><button class="secondary" onclick="testSource()">Test network connection</button><button class="secondary" onclick="deleteSource()">Delete selected source</button><button class="secondary" onclick="reloadSources()">Reload config file</button></div>
@@ -63,8 +66,10 @@
 <small>For linked work, choose Listen and submit the bounded assignment through AIOS with the separate operator credential. The host runs these checks after the model finishes. Without required checks, completion stays unverified. Goal completion requires separate operator review in AIOS.</small>
 <button onclick="start(false)">Run task</button><button class="secondary" onclick="start(true)">Listen for AIOS work</button><button class="secondary" onclick="stop()">Stop</button>
 <small>Multiple agents can listen together. Tasks sharing a directory take turns; administration-enabled profiles reserve the host during execution. Shell commands run with this machine account's permissions. Use a dedicated development VM/container. No graphical IDE is required.</small>
+<pre id="liveStatus" aria-live="polite">Waiting for worker status…</pre>
+<details><summary>Run status details</summary>
 <button type="button" class="secondary" onclick="copyLog('status')">Copy run status</button>
-<pre id="status" aria-live="polite">No runs yet.</pre>
+<pre id="status">No runs yet.</pre></details>
 <details><summary>Latest activity</summary>
 <button type="button" class="secondary" onclick="copyLog('events')">Copy activity log</button>
 <pre id="events">Select an agent with a run.</pre></details>
@@ -76,14 +81,14 @@ function notice(message,error=false){$('notice').textContent=message;$('notice')
 async function api(path,body){const r=await fetch('/api/'+path,{method:body===undefined?'GET':'POST',headers:{'Content-Type':'application/json','X-Client-Token':token},body:body===undefined?undefined:JSON.stringify(body)});const d=await r.json();if(!r.ok)throw Error([d.error||JSON.stringify(d.detail)||'Request failed',d.hint].filter(Boolean).join('\n'));return d}
 async function act(fn){for(const b of document.querySelectorAll('button'))b.disabled=true;try{await fn()}catch(e){notice(e.message,true)}finally{for(const b of document.querySelectorAll('button'))b.disabled=false}}
 function options(id,names,blank=false){const old=$(id).value;$(id).replaceChildren();for(const name of [...(blank?['']:[]),...names]){const o=document.createElement('option');o.value=name;o.textContent=name||'New profile';$(id).append(o)}if(names.includes(old))$(id).value=old}
-function sourceVisibility(){const local=['local_documents','local_text'].includes(v('sAdapter'));$('sNetwork').hidden=local;$('sLocal').hidden=!local;$('sOriginsLabel').hidden=v('sAdapter')!=='searxng';$('sIndexed').disabled=v('sAdapter')!=='local_documents';$('sStatus').textContent=local?'Local source: select an approved directory.':'Network source: enter a URL reachable from this client host. Calibre /opds is added automatically.'}
+function sourceVisibility(){const local=['local_documents','local_text'].includes(v('sAdapter'));$('sNetwork').hidden=local;$('sWebLimit').hidden=v('sAdapter')!=='searxng';$('sDocumentLimit').hidden=v('sAdapter')!=='calibre_opds';$('sFallbackLabel').hidden=local;$('sLocal').hidden=!local;$('sOriginsLabel').hidden=v('sAdapter')!=='searxng';$('sIndexed').disabled=v('sAdapter')!=='local_documents';$('sStatus').textContent=local?'Local source: select an approved directory.':'Network source: enter a URL reachable from this client host. Calibre /opds is added automatically.'}
 function normalizeSourceDraft(source){source.id=source.id.trim().toLowerCase().replace(/\s+/g,'-');if(source.adapter==='calibre_opds'&&source.endpoint){source.endpoint=source.endpoint.trim().replace(/\/+$/,'');if(!source.endpoint.toLowerCase().endsWith('/opds'))source.endpoint+='/opds'}return source}
-function sourceEditor(){const adapter=v('sAdapter'),local=['local_documents','local_text'].includes(adapter);return normalizeSourceDraft({id:v('sName'),adapter,enabled:v('sEnabled')==='true',priority:Number(v('sPriority')),topics:v('sTopics').split('\n').map(s=>s.trim()).filter(Boolean),endpoint:local?null:v('sEndpoint'),root:local?v('sRoot'):null,read_origins:adapter==='searxng'?v('sOrigins').split('\n').map(s=>s.trim()).filter(Boolean):[],indexed:adapter==='local_documents'&&v('sIndexed')==='true'})}
+function sourceEditor(){const adapter=v('sAdapter'),local=['local_documents','local_text'].includes(adapter);return normalizeSourceDraft({id:v('sName'),adapter,enabled:v('sEnabled')==='true',priority:Number(v('sPriority')),allow_query_fallback:local||v('sFallback')==='true',topics:v('sTopics').split('\n').map(s=>s.trim()).filter(Boolean),endpoint:local?null:v('sEndpoint'),root:local?v('sRoot'):null,read_origins:adapter==='searxng'?v('sOrigins').split('\n').map(s=>s.trim()).filter(Boolean):[],indexed:adapter==='local_documents'&&v('sIndexed')==='true',...(adapter==='searxng'?{max_web_bytes:Math.round(Number(v('sWebMiB'))*1048576)}:{}),...(adapter==='calibre_opds'?{max_document_bytes:Math.round(Number(v('sDocumentMiB'))*1048576)}:{})})}
 function refreshResearchSources(){options('sSaved',researchConfig.sources.map(s=>s.id),true);const selected=[...document.querySelectorAll('#gResearchSources input:checked')].map(x=>x.value);const host=$('gResearchSources');host.replaceChildren();if(!researchConfig.sources.length){const hint=document.createElement('small');hint.textContent='No sources configured. Add SearXNG, Calibre or a local collection above.';host.append(hint)}for(const source of researchConfig.sources){const label=document.createElement('label');const check=document.createElement('input');check.type='checkbox';check.value=source.id;check.checked=selected.includes(source.id);check.disabled=!source.enabled;check.style.width='auto';check.style.display='inline-block';check.style.marginRight='8px';label.append(check,document.createTextNode(source.id+' ('+source.adapter+(source.enabled?'':', disabled')+')'));host.append(label)}}
 function selectedResearchGrants(){return [...document.querySelectorAll('#gResearchSources input:checked')].map(x=>x.value)}
 function restoreResearchGrants(grants){const allowed=new Set(grants||[]);for(const el of document.querySelectorAll('#gResearchSources input'))el.checked=allowed.has(el.value)}
 async function reloadSources(){await act(async()=>{researchConfig=await api('research-sources');refreshResearchSources();notice('Research sources loaded from research_sources.json.')})}
-function loadSource(){const source=researchConfig.sources.find(s=>s.id===v('sSaved'));$('sName').value=source?.id||'';$('sAdapter').value=source?.adapter||'searxng';$('sEndpoint').value=source?.endpoint||'';$('sRoot').value=source?.root||'';$('sPriority').value=source?.priority??100;$('sEnabled').value=String(source?.enabled??true);$('sIndexed').value=String(source?.indexed??false);$('sTopics').value=(source?.topics||[]).join('\n');$('sOrigins').value=(source?.read_origins||[]).join('\n');sourceVisibility()}
+function loadSource(){const source=researchConfig.sources.find(s=>s.id===v('sSaved'));$('sName').value=source?.id||'';$('sAdapter').value=source?.adapter||'searxng';$('sEndpoint').value=source?.endpoint||'';$('sRoot').value=source?.root||'';$('sPriority').value=source?.priority??100;$('sWebMiB').value=(source?.max_web_bytes??250000)/1048576;$('sDocumentMiB').value=(source?.max_document_bytes??12582912)/1048576;$('sFallback').value=String(source?.allow_query_fallback??true);$('sEnabled').value=String(source?.enabled??true);$('sIndexed').value=String(source?.indexed??false);$('sTopics').value=(source?.topics||[]).join('\n');$('sOrigins').value=(source?.read_origins||[]).join('\n');sourceVisibility()}
 async function saveSource(){await act(async()=>{const body={source:sourceEditor()};if(v('sSaved'))body.previous_id=v('sSaved');researchConfig=await api('research-sources',body);refreshResearchSources();$('sSaved').value=body.source.id;loadSource();notice('Research source saved in research_sources.json. Restart active listeners to use changes.')})}
 async function deleteSource(){await act(async()=>{if(!v('sSaved'))throw Error('Select a saved source');researchConfig=await api('research-sources',{delete_id:v('sSaved')});refreshResearchSources();$('sSaved').value='';loadSource();notice('Research source deleted from research_sources.json.')})}
 async function testSource(){await act(async()=>{const source=sourceEditor();const r=await api('test-research-source',{source});notice(JSON.stringify({source_id:source.id,endpoint:source.endpoint,...r},null,2),!r.ok)})}
@@ -137,12 +142,24 @@ async function poll(){
   try{
     const rows=await api('status');
     if(!current())return;
+    const formatRun=run=>['Last run '+run.id.slice(0,8),'Execution '+run.execution,
+      'Checks '+run.verification,run.worker_outcome?'Worker outcome '+run.worker_outcome:'',
+      'AIOS report '+run.delivery].filter(Boolean).join(' · ');
+    const summarize=row=>{
+      const live=row.live;
+      const phase=row.active?live.label+' ('+live.elapsed_seconds+'s)':row.error||live?.label||'No live worker status';
+      const work=live?.run_id?'  Run '+live.run_id.slice(0,8)+' · '+live.objective:'';
+      const commands=Object.values(live?.commands||{}).map(command=>'  Command running · '+command.command);
+      return [row.agent+' · '+phase,work,...commands,row.last_run?'  '+formatRun(row.last_run):'']
+        .filter(Boolean).join('\n');
+    };
+    showLog('liveStatus',rows.length?rows.map(summarize).join('\n\n'):'No agent profiles yet.');
     showLog('status',rows.length?JSON.stringify(rows,null,2):'No agent profiles yet.');
     const run=rows.find(x=>x.agent===agent)?.runs[0];
     if(!run){showLog('events','Select an agent with a run.');return}
     const events=await api('events?agent='+encodeURIComponent(agent)+'&run='+encodeURIComponent(run.id));
     if(current())showLog('events',JSON.stringify(events,null,2));
-  }catch(e){if(current())showLog('status',e.message)}
+  }catch(e){if(current()){showLog('liveStatus',e.message);showLog('status',e.message)}}
 }
 $('runAgent').onchange=()=>{
   showLog('events','Loading activity…');

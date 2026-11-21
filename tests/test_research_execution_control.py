@@ -21,6 +21,10 @@ FEED = f"""<feed xmlns="{ATOM}"><entry>
 
 
 class Host:
+    secrets = ()
+    command_timeout = 120
+    assignment_deadline = None
+
     def guard(self):
         pass
 
@@ -44,7 +48,7 @@ def test_search_dedup_and_calibre_acquisition_cache(monkeypatch):
                               content=b"sample-pdf")
     tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
     monkeypatch.setattr("aios_client.research.tools.extract_document",
-                        lambda data, ext: ([("page:1", "Ice sheet evidence"),
+                        lambda data, ext, **kwargs: ([("page:1", "Ice sheet evidence"),
                                             ("page:2", "Moraines")], []))
     first = tool.research_search("glacier", "calibre")
     assert first["status"] == "ok"
@@ -156,9 +160,9 @@ def test_oversized_book_fails_once_without_repeated_download(monkeypatch):
             return httpx.Response(200, headers={"content-type": "application/atom+xml"},
                                   text=FEED)
         return httpx.Response(200, headers={"content-type": "application/pdf"},
-                              content=b"x" * 20)
-    monkeypatch.setattr("aios_client.research.tools.MAX_DOCUMENT", 10)
-    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+                              content=b"x" * (1024 * 1024 + 1))
+    bounded_source = source().model_copy(update={"max_document_bytes": 1024 * 1024})
+    tool = ResearchTools(Host(), [bounded_source], httpx.MockTransport(serve))
     result = tool.research_search("glacier", "calibre")
     eid = result["results"][0]["evidence_id"]
     first = tool.research_read(eid, section_index=0)
@@ -166,8 +170,9 @@ def test_oversized_book_fails_once_without_repeated_download(monkeypatch):
     assert first["error"] == second["error"] == "response_too_large"
     assert first["cache_hit"] is False
     assert second["cache_hit"] is True
-    assert first["limit_bytes"] == 10
+    assert first["limit_bytes"] == 1024 * 1024
     assert tool.control.failed_acquisitions == 1
+    assert tool.control.passages == 1  # cached failure does not consume passages
     assert sum("/book.pdf" in url for url in requests) == 1
 
 
@@ -398,7 +403,7 @@ def test_first_read_chooses_relevant_pdf_page_for_compound_query(monkeypatch):
         return httpx.Response(200, headers={"content-type": "application/pdf"},
                               content=b"mock-pdf")
     monkeypatch.setattr("aios_client.research.tools.extract_document",
-                        lambda data, kind: ([
+                        lambda data, kind, **kwargs: ([
                             ("page:1", "General science and basic chemistry"),
                             ("page:2", "Pleistocene glacial deposits around Great Lakes moraines"),
                             ("page:3", "A non-glacial chapter on rock types"),
@@ -438,3 +443,211 @@ def test_candidate_after_sixth_position_survives_research_context_ledger():
     assert any(item["evidence_id"] == expected_id
                for item in tool.control.snapshot()["candidates"])
     assert tool.recommended_unread()["evidence_id"] == expected_id
+
+
+def test_calibre_404_diagnoses_root_and_recovers_via_broad_metadata():
+    requests = []
+    def serve(request):
+        requests.append(str(request.url))
+        if request.url.path == "/opds":
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=f'<feed xmlns="{ATOM}"><link rel="search" href="/opds/search/{{searchTerms}}"/></feed>')
+        if "all%3A" in str(request.url):
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=FEED)
+        return httpx.Response(404)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    response = tool.research_search("laurentide ice sheet", "calibre")
+    assert response["status"] == "ok"
+    assert response["search_mode"] == "metadata_broad"
+    assert response["full_text_error"] == "http_status_404"
+    assert len(requests) == 4
+    assert sum(url.endswith("/opds") for url in requests) == 1
+    assert tool.calibre_search_probes["calibre"]["advertised_search"] is True
+
+
+def test_calibre_all_query_failure_preserves_exact_http_error():
+    def serve(request):
+        if request.url.path == "/opds":
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=f'<feed xmlns="{ATOM}"></feed>')
+        return httpx.Response(404)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    response = tool.research_search("laurentide ice sheet", "calibre")
+    assert response["status"] == "source_error"
+    assert response["errors"]["calibre"] == "http_status_404"
+    assert tool.calibre_search_probes["calibre"]["advertised_search"] is False
+    assert response["error_details"]["calibre"]["final_search_error"] == "http_status_404"
+
+
+def test_calibre_configurable_larger_document_download(monkeypatch):
+    # A 7 MiB PDF exceeds the previous global 6 MiB bound but fits the
+    # per-source default (12 MiB), without relaxing extracted-text limits.
+    seen_limits = []
+    def serve(request):
+        if "/search/" in request.url.path:
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=FEED)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=b"x" * (7 * 1024 * 1024))
+    def extraction(data, ext, *, max_bytes):
+        seen_limits.append((len(data), max_bytes))
+        return [("page:1", "Ice flow observations")], []
+    monkeypatch.setattr("aios_client.research.tools.extract_document", extraction)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    search = tool.research_search("glacier", "calibre")
+    result = tool.research_read(search["results"][0]["evidence_id"])
+    assert result["text"] == "Ice flow observations"
+    assert seen_limits == [(7 * 1024 * 1024, 12 * 1024 * 1024)]
+
+
+def test_find_calibre_passages_ranks_books_and_reuses_document(monkeypatch):
+    feed = FEED.replace("</feed>", FEED[FEED.index("<entry>"):FEED.index("</feed>")]
+                        .replace("urn:uuid:one", "urn:uuid:two")
+                        .replace("Glacial Geology of Michigan", "Quaternary")
+                        .replace("/book.pdf", "/second.pdf") + "</feed>")
+    downloads = []
+
+    def serve(request):
+        if "/search/" in request.url.path:
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=feed)
+        downloads.append(request.url.path)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=request.url.path.encode())
+
+    def extract(data, kind, **kwargs):
+        if data == b"/book.pdf":
+            return [("page:1", "Great Lakes bibliography")], ["page_limit"]
+        return [("page:7", "Front matter. " * 230 + "Great\nLakes Laurentide till.")], []
+
+    monkeypatch.setattr("aios_client.research.tools.extract_document", extract)
+    tool = ResearchTools(Host(), [source()], httpx.MockTransport(serve))
+    books = tool.research_search("glacier", "calibre")["results"]
+    ids = [book["evidence_id"] for book in books]
+    found = tool.research_find_passages("calibre", ids, ["Great Lakes", "Laurentide"])
+    hit = found["matches"][0]
+    assert hit["evidence_id"] == ids[1]
+    assert hit["section"] == "page:7"
+    assert "Great\nLakes Laurentide till" in hit["snippet"]
+    assert found["coverage"][0]["limitations"] == ["page_limit"]
+    assert tool.control.passages == 0
+    assert tool.control.passage_scans == 1
+    assert not tool.control.verified_passages
+    assert tool.has_unread_passage_targets()
+    read = tool.research_read(hit["evidence_id"], cursor=hit["cursor"],
+                              section_index=hit["section_index"])
+    assert "Great\nLakes Laurentide till" in read["text"]
+    assert tool.control.verified_passages[0]["match_score"] == 2
+    assert downloads == ["/book.pdf", "/second.pdf"]
+    assert tool.control.passages == 1
+
+
+def test_staged_oversized_calibre_pdf_cites_later_page(tmp_path, monkeypatch, capsys):
+    import hashlib
+    import shutil
+    import sys
+
+    import pytest
+    from pypdf import PdfWriter
+    from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
+
+    from aios_client.cli import main
+    from aios_client.research.staged_pdf import stage_pdf
+
+    if not all(shutil.which(cmd) for cmd in ("prlimit", "pdfinfo", "pdftotext")):
+        pytest.skip("Poppler utilities and prlimit are required for staging")
+    pdf = tmp_path / "export.pdf"
+    writer = PdfWriter()
+    for page in range(1, 94):
+        writer.add_blank_page(200, 200)
+    page = writer.pages[90]
+    font = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    page[NameObject("/Resources")] = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({NameObject("/F1"): font}),
+    })
+    stream = DecodedStreamObject()
+    stream.set_data(b"BT /F1 12 Tf 10 100 Td (Unique moraine marker) Tj ET")
+    page[NameObject("/Contents")] = writer._add_object(stream)
+    writer.add_attachment("payload.dat", bytes(25 * 1024 * 1024))
+    writer.write(pdf)
+    assert pdf.stat().st_size > 24 * 1024 * 1024
+    payload = pdf.read_bytes()
+    root = tmp_path / "client-data" / "staged-calibre-pdfs"
+    config = tmp_path / "client.json"
+    (tmp_path / "research_sources.json").write_text(json.dumps({
+        "version": 1, "sources": [source().model_dump()],
+    }))
+    requests = []
+
+    def serve(request):
+        requests.append(request.url.path)
+        if "/search/" in request.url.path:
+            feed = FEED
+            if "oversized catalog" in request.url.path:
+                feed += " " * (128 * 1024)
+            return httpx.Response(200, headers={"content-type": "application/atom+xml"},
+                                  text=feed)
+        return httpx.Response(200, headers={"content-type": "application/pdf"},
+                              content=payload)
+
+    def tools_for(configured_source):
+        return ResearchTools(Host(), [configured_source], httpx.MockTransport(serve),
+                             staged_pdf_path=root)
+
+    tool = tools_for(source())
+    book = tool.research_search("moraine", "calibre")["results"][0]
+    eid = book["evidence_id"]
+    failure = tool.research_read(eid)
+    assert failure["error"] == "response_too_large"
+    assert failure["limit_bytes"] == 12 * 1024 * 1024
+    assert tool.control.snapshot()["acquisition_errors"][0]["error"] == "response_too_large"
+    assert failure["evidence"]["location"]["catalog_id"] == "urn:uuid:one"
+
+    with pytest.raises(ValueError, match="staging byte limit"):
+        stage_pdf(root, source(), "urn:uuid:one", pdf, max_bytes=24 * 1024 * 1024,
+                  max_pages=91, timeout=30)
+    operator = ["aios-client", "--config", str(config)]
+    selection = ["--source", "calibre", "--catalog-id", "urn:uuid:one"]
+    monkeypatch.setattr(sys, "argv", [*operator, "stage-calibre-pdf", *selection,
+                                    "--pdf", str(pdf), "--max-mib", "32",
+                                    "--max-pages", "91", "--timeout", "30"])
+    main()
+    staged = json.loads(capsys.readouterr().out)
+    assert staged["coverage"] == {
+        "total_pages": 93, "attempted_pages": 91, "indexed_pages": 1,
+        "no_text_pages": 90, "failed_pages": 0, "clipped_pages": 0,
+        "unprocessed_pages": 2, "unprocessed_range": "92–93",
+    }
+    matches = tool.research_find_passages("calibre", [eid], ["unique moraine"])
+    assert matches["coverage"][0]["pdf_coverage"] == staged["coverage"]
+    hit, = matches["matches"]
+    assert (hit["section"], hit["section_index"]) == ("page:91", 90)
+    assert tool.research_evidence(eid)["receipt"]["read_verified"] is False
+    assert tool.research_read(eid, section_index=89)["error"] == "pdf_page_unavailable"
+    result = tool.research_read(eid, section_index=hit["section_index"], cursor=hit["cursor"])
+    assert result["text"] == "Unique moraine marker"
+    assert result["section"] == "page:91"
+    assert result["passage_retrieved"] is True
+    assert result["full_document_retrieved"] is False
+    assert result["document_sha256"] == hashlib.sha256(payload).hexdigest()
+    assert result["research_progress"]["pdf_coverage"][0]["total_pages"] == 93
+    assert result["research_progress"]["acquisition_errors"] == []
+    assert tool.research_evidence(eid)["receipt"]["read_verified"] is True
+    assert requests.count("/book.pdf") == 1
+    catalog = tools_for(source()).research_search("oversized catalog", "calibre")
+    assert catalog["errors"]["calibre"] == "response_too_large"
+
+    other_endpoint = source().model_copy(update={"endpoint": "http://other.lan/opds"})
+    other = tools_for(other_endpoint)
+    other_eid = other.research_search("moraine", "calibre")["results"][0]["evidence_id"]
+    assert other.research_read(other_eid)["error"] == "response_too_large"
+    monkeypatch.setattr(sys, "argv", [*operator, "unstage-calibre-pdf", *selection])
+    main()
+    later = tools_for(source())
+    later_eid = later.research_search("moraine", "calibre")["results"][0]["evidence_id"]
+    assert later.research_read(later_eid)["error"] == "response_too_large"

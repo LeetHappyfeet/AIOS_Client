@@ -10,6 +10,7 @@ import pytest
 from aios_client.assignment import assignment
 from aios_client.http import API
 from aios_client.reporting import result_summary
+from aios_client.research.synthesis import merge_research_report
 from aios_client.verification import snapshot, verify
 from aios_client.workspace import Workspace
 from test_v3 import Service, make_runner, model_api
@@ -79,6 +80,27 @@ def test_legacy_and_malformed_results_do_not_fabricate_success(workspace):
     result = result_summary(workspace, assignment('Inspect'),
                             json.dumps(report(requested_content='wrong')))
     assert result['requested_content'] == []
+
+
+def test_finalized_research_outcome_preserves_published_findings_and_citations(workspace):
+    workspace.registry.tool_mode = "research"
+    workspace.research_tools.search_audit.append({
+        "query": "levitation", "status": "source_error", "errors": {"calibre": "http_status_404"},
+    })
+    citation = {"finding_index": 0, "evidence_id": "a" * 24}
+    workspace.published_result = report(
+        findings=["Retrieved a passage"], research_citations=[citation],
+        requested_content=[{"label": "Source note", "text": "An excerpt"}],
+    )
+    spec = assignment("Look for evidence")
+    final = merge_research_report(spec, workspace.research_tools, json.dumps(report()))
+    summary = result_summary(workspace, spec, final)
+    assert summary["outcome"] == json.loads(final)["outcome"] == "partial"
+    assert summary["source"] == "publish_result"
+    assert summary["findings"] == ["Retrieved a passage"]
+    assert summary["research_citations"] == [citation]
+    assert summary["requested_content"][0]["text"] == "An excerpt"
+    assert any("incomplete coverage" in item for item in summary["limitations"])
 
 
 def test_runner_sends_structured_result_in_same_execution_loop(tmp_path, monkeypatch):

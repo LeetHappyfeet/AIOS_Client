@@ -1,6 +1,9 @@
 """Offline tests for source-granted, bounded research tools."""
 
+import asyncio
 import json
+import time
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -69,8 +72,9 @@ def test_searxng_search_is_bounded_and_only_requests_configured_endpoint(tmp_pat
     def serve(request):
         calls.append(request)
         assert request.url.path == "/search"
-        assert request.url.params["format"] == "json"
-        assert request.url.params["q"] == "diesel pump"
+        assert request.method == "POST"
+        assert not request.url.query
+        assert parse_qs(request.content.decode()) == {"format": ["json"], "q": ["diesel pump"]}
         return httpx.Response(200, headers={"Content-Type": "application/json"},
                               json={"results": [
                                   {"title": "Manual", "content": "A fuel pump excerpt",
@@ -115,8 +119,8 @@ def test_transport_failures_are_bounded_and_no_result_url_following(tmp_path):
         lambda r: httpx.Response(302, headers={"Location": "http://internal.test/"})
     ))
     result = w.execute("research_search", {"query": "current events"})
-    assert result["status"] == "no_results"
-    assert result["errors"]["web"] == "http_status"
+    assert result["status"] == "source_error"
+    assert result["errors"]["web"] == "http_status_302"
 
 
 def test_document_extraction_and_changed_file_refusal(tmp_path):
@@ -143,24 +147,26 @@ def test_document_extraction_and_changed_file_refusal(tmp_path):
         assert "secret" not in read["text"]
     html = next(x for x in result["results"] if x["title"] == "guide.html")
     (docs / "guide.html").write_text("<p>Modified document</p>")
-    changed = w.execute("research_read", {"evidence_id": html["evidence_id"]})
+    # A different passage request checks the on-disk file again.
+    changed = w.execute("research_read", {"evidence_id": html["evidence_id"], "cursor": 1})
     assert changed["error"] == "document_changed"
 
 
 def test_web_page_requires_explicit_origin_and_never_redirects(tmp_path):
     urls = []
+    report_url = "https://articles.test/report?" + "q=" + "a" * 1600
     def responder(request):
         urls.append(str(request.url))
         if request.url.path == "/search":
             return httpx.Response(200, json={"results": [
-                {"title": "Good", "content": "Abstract", "url": "https://articles.test/report"},
+                {"title": "Good", "content": "Abstract", "url": report_url},
                 {"title": "Bad", "content": "Abstract", "url": "http://localhost/private"}]})
         assert request.url.path == "/report"
         return httpx.Response(200, headers={"content-type": "text/html"},
                               text="<html><script>evil</script><p>Verified text in article</p></html>")
     sources = load(tmp_path, [{"id": "web", "adapter": "searxng",
                                "endpoint": "http://search.test",
-                               "read_origins": ["https://articles.test"]}], ["web"])
+                               "read_origins": ["https://ARTICLES.test:443/"]}], ["web"])
     w = make_workspace(tmp_path, sources, transport=httpx.MockTransport(responder))
     search = w.execute("research_search", {"query": "article"})
     items = search["results"]
@@ -170,6 +176,8 @@ def test_web_page_requires_explicit_origin_and_never_redirects(tmp_path):
     assert "Verified text" in approved["text"] and "evil" not in approved["text"]
     unapproved = w.execute("research_read", {"evidence_id": items[1]["evidence_id"]})
     assert unapproved["full_document_retrieved"] is False
+    assert len(items[0]["url"]) == 1500
+    assert urls[1] == report_url
     assert len(urls) == 2
     assert not any("localhost" in url for url in urls)
 
@@ -250,12 +258,16 @@ def test_optional_local_index_rebuilds_changed_file(tmp_path):
                                "root":str(docs), "indexed":True}], ["indexed"])
     root = tmp_path / "workspace"
     root.mkdir()
-    w = Workspace(root, tmp_path / "artifacts", research_sources=sources,
-                  research_index_path=tmp_path / "cache" / "index.sqlite3",
-                  tool_mode="research")
+    def new_run():
+        return Workspace(root, tmp_path / "artifacts", research_sources=sources,
+                         research_index_path=tmp_path / "cache" / "index.sqlite3",
+                         tool_mode="research")
+
+    w = new_run()
     result = w.execute("research_search", {"query":"engine coolant"})
     assert len(result["results"]) == 1
     path.write_text("Steel bearings and seals.")
+    w = new_run()
     assert not w.execute("research_search", {"query":"engine coolant"})["results"]
     assert len(w.execute("research_search", {"query":"steel bearings"})["results"]) == 1
 
@@ -396,3 +408,71 @@ def test_pass3_never_cites_another_run_or_forged_id(tmp_path):
             "findings": ["Claim without observed source"],
             "research_citations": [
                 {"finding_index": 0, "evidence_id": "0" * 24}]})
+
+
+@pytest.mark.parametrize(("status_code", "payload", "status"), [
+    (200, {"results": []}, "no_results"),
+    (403, {}, "source_error"),
+    (200, {"results": [], "unresponsive_engines": [["example", "timeout"]]}, "partial_results"),
+])
+def test_searxng_distinguishes_search_outcomes(tmp_path, status_code, payload, status):
+    sources = load(tmp_path, [{"id": "web", "adapter": "searxng",
+                               "endpoint": "http://search.test"}], ["web"])
+    w = make_workspace(tmp_path, sources, transport=httpx.MockTransport(
+        lambda _: httpx.Response(status_code, json=payload)))
+    result = w.execute("research_search", {"query": "current events"})
+    assert result["status"] == status
+    if status_code == 403:
+        assert "search.formats" in result["error_details"]["web"]["hint"]
+    if status == "partial_results":
+        assert result["engine_failures"] == {"web": 1}
+
+
+def test_searxng_rejects_credentials_and_respects_fallback_policy(tmp_path):
+    docs = tmp_path / "docs"
+    docs.mkdir()
+    calls = []
+    sources = load(tmp_path, [
+        {"id": "books", "adapter": "local_text", "root": str(docs), "priority": 1},
+        {"id": "web", "adapter": "searxng", "endpoint": "http://search.test",
+         "allow_query_fallback": False},
+    ], ["books", "web"])
+
+    def serve(request):
+        calls.append(request)
+        return httpx.Response(200, json={"results": []})
+
+    w = make_workspace(tmp_path, sources, transport=httpx.MockTransport(serve))
+    w.secrets = ("fake-token",)
+    blocked = w.execute("research_search", {"query": "inspect fake%2Dtoken", "source_id": "web"})
+    assert blocked["status"] == "query_rejected"
+    assert "fake" not in repr(w.research_tools.search_audit)
+    result = w.execute("research_search", {"query": "current events"})
+    assert result["attempted_sources"] == ["books"]
+    assert not calls
+    w.execute("research_search", {"query": "current events", "source_id": "web"})
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("stall", ["headers", "body"])
+def test_searxng_total_deadline_caps_stalled_request(tmp_path, stall):
+    sources = load(tmp_path, [{"id": "web", "adapter": "searxng",
+                               "endpoint": "http://search.test"}], ["web"])
+
+    class Trickle(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            while True:
+                await asyncio.sleep(0.005)
+                yield b" "
+
+    async def serve(request):
+        if stall == "headers":
+            await asyncio.sleep(2)
+        return httpx.Response(200, headers={"content-type": "application/json"}, stream=Trickle())
+
+    w = make_workspace(tmp_path, sources, transport=httpx.MockTransport(serve))
+    start = time.monotonic()
+    w.assignment_deadline = start + 0.05
+    result = w.execute("research_search", {"query": "current events"})
+    assert result["errors"]["web"] == "TimeoutError"
+    assert time.monotonic() - start < 1

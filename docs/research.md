@@ -15,7 +15,7 @@ automatically. The current adapter requires an endpoint ending in `/opds`;
 other OPDS paths would require an adapter change. The network test checks whether
 the resulting URL returns an Atom feed; it does **not** prove that the
 server's root page is an OPDS catalog. SearXNG accepts its base URL, for
-example `http://192.168.1.4:8080/`, and uses `/search?format=json`.
+example `http://192.168.1.4:8080/`, and sends a form-encoded POST to `/search` with `format=json`.
 
 The manually edited `research_sources.json` file remains strict: use
 lowercase canonical IDs and the **complete** Calibre `/opds` endpoint.
@@ -115,6 +115,22 @@ configuration JSON**, for example:
 Set the endpoint to the actual SearXNG base URL **reachable from the client
 host**. If SearXNG runs on a different LAN machine, localhost is not appropriate.
 SearXNG must have `json` enabled under `search.formats` in its settings.
+Enable only the upstream engines your agents may use in SearXNG itself.
+SearXNG accepts engine and category selectors in query text and can forward
+terms to upstream engines even when its endpoint is on your LAN.
+
+The research tool rejects queries containing a configured client credential
+before sending them. Each request has a total timeout of at most 10 seconds,
+capped by the remaining assignment time. Search reports distinguish empty
+results (`no_results`), provider errors (`source_error`), and incomplete
+engine coverage (`partial_results`, with counts by source). A 403 includes
+a hint about JSON output and access rules.
+
+To keep an automatic search from sending its query to a secondary network
+source, set `"allow_query_fallback": false` on that destination or choose
+**No** under **Accept automatic fallback queries** in setup. The default is
+true. The setting applies to the second source in priority order. The source
+can still be searched as the first source or by explicitly selecting its ID.
 
 In the relevant agent profile of the normal AIOS-Client configuration, add:
 
@@ -439,3 +455,153 @@ research findings are true or complete.
 Regressions cover a relevant book appearing after six unrelated OPDS entries,
 preserved recommended-evidence IDs, and an attempted model replacement of
 the authorized assignment objective.
+
+
+## Research synthesis and Calibre download recovery (v2)
+
+The 2026-11-16 experiment reached the research output-token limit
+(`finish_reason=length`) in every reserved reporting step. AIOS-Client now
+supplies a **fresh, compact synthesis prompt** with a bounded list of
+passage excerpts and exact run-local search statuses. The model is instructed
+to return at most three concise findings, never the whole chat history.
+The host then attaches the original authorized objective, exact search ledger,
+budgets, and unavailable-coverage caveat. Findings without a matching
+retrieved evidence ID, source ID and section are omitted from the report.
+A finalization output-length truncation immediately produces a partial,
+auditable fallback rather than repeatedly spending more model steps.
+
+The Calibre OPDS adapter distinguishes full-text indexing from metadata
+search. If both search forms give 404, the client makes **one** bounded,
+non-following request to the operator-configured OPDS root to diagnose
+whether it advertises search, and tries one `all:keyword` metadata probe
+on the **same configured endpoint**. Such hits are explicitly labeled
+`metadata_broad` and `query_scope: broad_keyword_fallback`, **not**
+exact-phrase matches. HTTP 404 is an error/uncertainty, never `no_results`
+or proof that a library lacks a topic.
+
+Operator-configured Calibre source entries accept an optional
+`max_document_bytes` integer. Default: `12582912` (12 MiB), allowed
+range 1–24 MiB. For example:
+
+```json
+{
+  "id": "calibre",
+  "adapter": "calibre_opds",
+  "endpoint": "http://192.168.1.16/opds",
+  "max_document_bytes": 16777216
+}
+```
+
+These example settings supplement the other normal source fields. The limit
+applies to streamed acquisition, not to the model's passage size. No redirects
+or ambient HTTP credentials are used. PDF/EPUB extraction is bounded to
+80 sections and an aggregate 250,000 text characters. Cached oversized or
+unreadable acquisitions do not consume additional passage budget on retry.
+Larger documents can still fail to extract; these limits do not enable OCR.
+
+Focused regression commands:
+
+```bash
+python3 -m pytest -q tests/test_research_synthesis_v2.py \
+  tests/test_research_execution_control.py \
+  tests/test_research_source_setup.py \
+  tests/test_research_report_finalization.py
+```
+
+This patch does not establish a research finding solely by passing a JSON
+structure check. Live integration with the actual Calibre content server
+remains necessary before promoting it into development.
+
+
+## Retained evidence across AIOS-Client → AIOS
+
+A partial or truncated research run may have `findings: []` despite having
+retrieved genuine passage text. The client now retains a **bounded, explicitly
+named evidence projection** in `result_summary`: up to eight authoritatively
+recorded passage receipts from `research_progress.verified_passages`, up to
+eight worker evidence references, and up to twelve exact research search
+statuses in `search_log`. Passage excerpts are truncated to 280 characters
+each; remote URLs, acquisition locators and unrelated tool history are never
+included. This summary is a transport envelope, not an independently verified
+research conclusion. AIOS can expose these using `read_work_result` sections
+`evidence`, `research_progress`, and `search_log` even when the main
+`report` was truncated at the 6,000-character transport threshold.
+
+The existing summary size budget remains 18,000 encoded characters.
+Any clipped evidence is marked by the existing `transport_truncated` field.
+No migration, new execution capability, or general file access is necessary.
+Use `python -m pytest -q tests/test_retained_research_transport.py` to
+check projection size and URL exclusion before running a live agent.
+
+## Stage an oversized Calibre PDF
+
+Export the PDF from Calibre and copy it to the AIOS Client host. Use the
+exact OPDS entry ID from the search result's `location.catalog_id` (or the
+matching Atom entry's `<id>`), and the source ID configured in the client:
+
+```bash
+sudo apt install poppler-utils util-linux
+aios-client stage-calibre-pdf --source calibre --catalog-id 'urn:uuid:your-book-id' \
+  --pdf /path/to/export.pdf
+```
+
+Run the command as the client operator with the same `--config` as the worker
+and let it finish before starting a research run. The command binds the file
+you supply to that catalog entry. Confirm the export belongs to that entry.
+Staging defaults to 128 MiB, 1,000 pages and 300 seconds of extraction.
+Override these with `--max-mib` (up to 512), `--max-pages` (up to 2,000),
+and `--timeout` (up to 1,800 seconds). The operator import uses Linux Poppler
+and `prlimit`. The temporary PDF copy is removed after staging. The index
+retains at most 8,000 characters per page and 2,000,000 per PDF.
+
+The catalog still uses the 128 KiB OPDS search response limit. Ordinary
+downloads still default to 12 MiB, with an operator-set range of 1–24 MiB. Staged reads use indexed text from the imported
+snapshot without downloading the original again. Existing source grants
+apply, and the entry still needs to be discovered in Calibre. Search hits
+carry a page and section index that can be passed to `research_read` for a
+citation receipt. Coverage reports total, attempted, indexed, blank or
+textless, failed, clipped, and unprocessed pages. It includes the range
+that was skipped when extraction stopped. Scans and charts with no text
+layer require OCR outside this workflow.
+
+Restage after replacing the Calibre PDF to update the snapshot in new
+research runs. Remove an index with
+`aios-client unstage-calibre-pdf --source calibre --catalog-id 'urn:uuid:your-book-id'`.
+
+## SearXNG result reading and retained evidence
+
+SearXNG sources can set `max_web_bytes` for HTML, plain text, and PDF result
+downloads. The default is 250,000 bytes. The operator may choose 65,536
+bytes through 24 MiB, either in the source registry or using the setup
+screen's **Web page / PDF download limit (MiB)** field. Search JSON responses
+retain their separate 128 KiB limit. For example:
+
+```json
+{
+  "id": "web",
+  "adapter": "searxng",
+  "endpoint": "http://search.lan:8080",
+  "read_origins": ["https://survey.example"],
+  "max_web_bytes": 12582912
+}
+```
+
+Restart listeners after saving source settings. Every result read and redirect
+destination requires an approved origin. The web reader follows at most three
+redirects within its request deadline. Failed downloads, denied origins, empty
+extractions and unsupported media types are retained in research progress and
+provided to synthesis. Repeated reads of a failed URL reuse its failure.
+
+Successful downloads are extracted once per source and URL per run. Later
+cursor reads reuse that snapshot and hash. Each web passage records a range,
+such as `web_document@2000-4000` or `page:4@0-1500`, so distinct passages
+survive synthesis and citation checks. Excerpts prefer matches to the search
+query and also retain a short tail. Coverage reports downloaded bytes,
+searchable sections, extracted character count and extraction limitations.
+An excerpt represents text actually returned by a read.
+
+HTML and plain-text extraction is bounded to 250,000 input characters.
+PDF extraction uses the existing text-layer reader with its page and text
+limits, and reports those limits when reached. Images and JavaScript-rendered
+content require additional tooling. Search excerpts alone cannot establish a
+read citation.

@@ -14,11 +14,15 @@ class ResearchControl:
     max_acquisitions: int = 6
     max_passages: int = 12
     max_failed_acquisitions: int = 4
+    max_passage_scans: int = 4
+    passage_scans: int = 0
     searches: int = 0
     acquisitions: int = 0
     passages: int = 0
     failed_acquisitions: int = 0
     verified_passages: list = field(default_factory=list)
+    acquisition_errors: dict = field(default_factory=dict)
+    pdf_coverage: dict = field(default_factory=dict)
     queries: list = field(default_factory=list)
     candidates: list = field(default_factory=list)
     blocked_operations: int = 0
@@ -29,6 +33,7 @@ class ResearchControl:
             "acquisition": self.acquisitions < self.max_acquisitions
                            and self.failed_acquisitions < self.max_failed_acquisitions,
             "passage": self.passages < self.max_passages,
+            "passage_scan": self.passage_scans < self.max_passage_scans,
         }[operation]
         if not allowed:
             self.blocked_operations += 1
@@ -37,12 +42,15 @@ class ResearchControl:
     def snapshot(self) -> dict:
         return {
             "searches": self.searches, "max_searches": self.max_searches,
+            "passage_scans": self.passage_scans, "max_passage_scans": self.max_passage_scans,
             "acquisitions": self.acquisitions, "max_acquisitions": self.max_acquisitions,
             "passages": self.passages, "max_passages": self.max_passages,
             "failed_acquisitions": self.failed_acquisitions,
             "max_failed_acquisitions": self.max_failed_acquisitions,
             "blocked_operations": self.blocked_operations,
             "verified_passages": self.verified_passages[-12:],
+            "acquisition_errors": list(self.acquisition_errors.values())[-8:],
+            "pdf_coverage": list(self.pdf_coverage.values())[-8:],
             "queries": self.queries[-8:],
             "candidates": self.candidates[-12:],
         }

@@ -1,0 +1,140 @@
+"""Small, evidence-grounded research synthesis: the host owns the audit ledger.
+
+Never turns a search failure into an absence claim, nor a passage receipt into
+verified scientific conclusions. The model owns interpretations, bounded by
+retained citation receipts; the host inserts deterministic search metadata.
+"""
+from __future__ import annotations
+
+import json
+
+
+def _verified_passages(tools, limit=8):
+    unique = {}
+    for item in tools.control.verified_passages:
+        key = (item.get("evidence_id"), item.get("section"))
+        if key[0] and key[1] and item.get("match_score", 0) >= unique.get(
+                key, {}).get("match_score", 0):
+            unique[key] = item
+    ranked = sorted(reversed(list(unique.values())),
+                    key=lambda item: item.get("match_score", 0), reverse=True)
+    return ranked[:limit]
+
+
+def compact_synthesis_messages(spec, tools):
+    """Reporting-only context: no giant assignment, no raw chat/tool history."""
+    passages = []
+    for row in _verified_passages(tools):
+        passages.append({
+            "evidence_id": row.get("evidence_id"),
+            "source_id": row.get("source_id"),
+            "title": row.get("title"),
+            "section": row.get("section"),
+            "passage_excerpt": str(row.get("passage_excerpt") or "")[:420],
+            **{key: row[key] for key in ("cursor", "end_cursor", "passage_excerpt_tail", "web_coverage")
+               if key in row},
+        })
+    audit = list(getattr(tools, "search_audit", []))[-12:]
+    brief = {
+        "assignment": str(getattr(spec, "objective", "Research assignment"))[:1200],
+        "passages": passages,
+        "search_statuses": audit,
+        "pdf_coverage": list(tools.control.pdf_coverage.values())[-8:],
+        "search_count": tools.control.searches,
+        "attempted_acquisitions": tools.control.acquisitions,
+        "acquisition_errors": list(tools.control.acquisition_errors.values())[-8:],
+        "unread_candidates": [
+            {"title": x.get("title"), "source_id": x.get("source_id")}
+            for x in tools.control.candidates[-8:]
+            if x.get("readable") and x.get("evidence_id") not in {
+                passage.get("evidence_id") for passage in tools.control.verified_passages
+            }
+        ][:5],
+    }
+    instruction = (
+        "Return ONLY a compact JSON object with: outcome (completed,partial,blocked),"
+        " summary (at most 300 characters), findings (at most 5 objects with"
+        " observation, interpretation, evidence_id, source_id, section),"
+        " evidence (brief list), and limitations (at most 5 short strings)."
+        " Cite only provided passage IDs and sections; do not quote whole pages."
+        " Treat search errors, unread books, omitted searches, and unindexed PDF text as UNKNOWN COVERAGE,"
+        " never evidence that the library lacks the subject."
+        " The host will attach the authoritative objective, exact search-status log,"
+        " research metrics and required output file. Do NOT repeat them."
+        " Keep response under 1300 tokens, even when evidence is insufficient."
+    )
+    return [
+        {"role": "system", "content": instruction},
+        {"role": "user", "content": json.dumps(brief, ensure_ascii=False)},
+    ]
+
+
+def merge_research_report(spec, tools, report):
+    """Append authoritative audit without laundering model-generated findings."""
+    data = json.loads(report)
+    if not isinstance(data, dict):
+        raise ValueError("Research synthesis must be a JSON object")
+    if data.get("outcome") not in {"completed", "partial", "blocked"}:
+        raise ValueError("Invalid research outcome")
+    if not isinstance(data.get("evidence"), list) or not isinstance(
+        data.get("limitations"), list
+    ):
+        raise ValueError("Missing research evidence or limitations")
+    data["objective"] = str(getattr(spec, "objective", "Research assignment"))
+    data["search_log"] = list(getattr(tools, "search_audit", []))
+    data["research_progress"] = tools.control.snapshot()
+    data["acquisition_errors"] = list(tools.control.acquisition_errors.values())[-8:]
+    data.setdefault("findings", [])
+    data.setdefault("artifacts", [])
+    data.setdefault("requested_content", [])
+    if not isinstance(data["findings"], list):
+        data["findings"] = []
+    verified = {(row.get("evidence_id"), row.get("section"))
+                for row in _verified_passages(tools, limit=12)}
+    checked = []
+    unsupported = 0
+    for finding in data["findings"][:5]:
+        if not isinstance(finding, dict):
+            unsupported += 1
+            continue
+        ref = (finding.get("evidence_id"), finding.get("section"))
+        if ref not in verified:
+            unsupported += 1
+            continue
+        receipt = next((row for row in _verified_passages(tools, limit=12)
+                        if (row.get("evidence_id"), row.get("section")) == ref), None)
+        if finding.get("source_id") != receipt.get("source_id"):
+            unsupported += 1
+            continue
+        checked.append(finding)
+    data["findings"] = checked
+    if unsupported:
+        data["limitations"].append(
+            f"{unsupported} model-authored findings omitted: no matching retrieved passage receipt.")
+    # A failed search or unread acquisition cannot establish whole-library absence.
+    incomplete_statuses = {"source_error", "source_unhealthy", "partial_results", "query_rejected"}
+    unresolved = any(row.get("status") in incomplete_statuses or row.get("errors")
+                     for row in data["search_log"])
+    incomplete_coverage = bool(data["acquisition_errors"]) or unresolved or any(
+        row.get("status") == "read_recommended" or row.get("full_text_error")
+        for row in data["search_log"]
+    )
+    if incomplete_coverage:
+        caveat = ("Some research searches failed, were skipped, or had incomplete coverage. "
+                  "Absence of relevant material is not established.")
+        if caveat not in data["limitations"]:
+            data["limitations"].append(caveat)
+        # Do not publish a categorical whole-library negative from failed probes.
+        summary = str(data.get("summary") or "")
+        if any(phrase in summary.casefold() for phrase in (
+            "does not contain", "no relevant books exist", "library lacks",
+            "library does not have", "no material exists",
+        )):
+            data["summary"] = (
+                "The retrieved passages did not establish the requested findings. "
+                "Some source searches were unsuccessful or unattempted; "
+                "whole-library coverage remains unknown."
+            )
+        if (unresolved or data["acquisition_errors"]) and data["outcome"] == "completed":
+            data["outcome"] = "partial"
+    return json.dumps(data, ensure_ascii=False)

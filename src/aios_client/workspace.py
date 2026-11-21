@@ -37,6 +37,7 @@ class Workspace:
         research_evidence_path=None,
         research_run_id=None,
         tool_mode="workspace",
+        research_staged_pdf_path=None,
     ):
         self.privileges = Privileges(administration_enabled)
         self.root = Path(root).expanduser().resolve(strict=True)
@@ -46,6 +47,7 @@ class Workspace:
         self.artifacts.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.secrets = tuple(s for s in secrets if s)
         self.cancelled = threading.Event()
+        self.assignment_deadline = None
         self.filesystem = files.FileTools(self.root, self.cancelled)
         self.process_manager = processes.ProcessTools(
             self, on_event, backend=process_backend
@@ -63,7 +65,8 @@ class Workspace:
             raise ValueError("Unknown agent tool mode")
         self.registry.tool_mode = tool_mode
         self.research_tools = ResearchTools(self, research_sources, research_transport, research_index_path,
-                                            research_evidence_path, research_run_id)
+                                            research_evidence_path, research_run_id,
+                                            staged_pdf_path=research_staged_pdf_path)
         files.register(self.registry, self.filesystem)
         processes.register(self.registry, self.process_manager)
         git.register(self.registry, self.git)

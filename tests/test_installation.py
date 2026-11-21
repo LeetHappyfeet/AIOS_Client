@@ -87,7 +87,7 @@ def test_configure_ui_and_setup_reuse_saved_settings(tmp_path, monkeypatch):
     monkeypatch.setattr(sys, "argv", ["aios-client", "--config", str(path), "configure-ui", "--host", "0.0.0.0", "--public-url", "http://192.0.2.10:9001"])
     cli.main()
     seen = {}
-    monkeypatch.setattr("uvicorn.run", lambda app, **kw: seen.update(kw))
+    monkeypatch.setattr("uvicorn.Server.run", lambda server: seen.update(vars(server.config)))
     monkeypatch.setattr(sys, "argv", ["aios-client", "--config", str(path), "setup"])
     cli.main()
     assert seen["host"] == "0.0.0.0" and seen["port"] == 9001
@@ -166,7 +166,7 @@ def test_saved_remote_ui_starts_a_real_listener(tmp_path):
     config_path = tmp_path / "client.json"
     UISettings(config_path).save(settings)
     process = subprocess.Popen([sys.executable, "-m", "aios_client.cli", "--config", str(config_path), "setup"],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+                               stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
     try:
         with httpx.Client(base_url=settings["public_url"], trust_env=False, timeout=1) as web:
             for _ in range(100):
@@ -183,4 +183,21 @@ def test_saved_remote_ui_starts_a_real_listener(tmp_path):
             assert web.get("/api/config", auth=("admin", PASSWORD)).status_code == 200
     finally:
         process.terminate()
-        process.communicate(timeout=10)
+        stdout, stderr = process.communicate(timeout=10)
+    assert f"AIOS Client ready: {settings['public_url']}" in stdout
+    assert "Browser UI stopped" in stderr
+
+
+def test_occupied_port_never_announces_browser_ready(tmp_path):
+    with socket.socket() as occupied:
+        occupied.bind(("127.0.0.1", 0))
+        occupied.listen()
+        port = occupied.getsockname()[1]
+        result = subprocess.run(
+            [sys.executable, "-m", "aios_client.cli", "--config", str(tmp_path / "client.json"),
+             "setup", "--port", str(port)],
+            capture_output=True, text=True, timeout=10,
+        )
+    assert result.returncode != 0
+    assert "AIOS Client ready" not in result.stdout
+    assert f"Browser UI failed to start on 127.0.0.1:{port}" in result.stderr

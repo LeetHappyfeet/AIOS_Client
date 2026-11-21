@@ -14,6 +14,7 @@ from .assignment import assignment
 from .config import ConfigStore, aios_url
 from .http import API, Model
 from .journal import Journal
+from .live import console_line, read_live
 from .protocol import negotiate
 from .runner import Runner, agent_dir
 from .ui_settings import check_basic, validate_ui
@@ -23,8 +24,9 @@ from .research.sources import load_sources
 
 
 class Manager:
-    def __init__(self, store):
+    def __init__(self, store, *, verbose=True):
         self.store = store
+        self.verbose = verbose
         self.lock = threading.RLock()
         self.running = {}
         self.errors = {}
@@ -48,13 +50,15 @@ class Manager:
                 self.gates[p["endpoint"]] = threading.BoundedSemaphore(
                     int(e.get("concurrency", 1))
                 )
-            runner = Runner(self.store, agent, self.gates)
+            runner = Runner(self.store, agent, self.gates, verbose=self.verbose)
 
             def work():
                 try:
                     runner.work(task or None, serve=serve)
                 except Exception as exc:
-                    self.errors[agent] = str(exc)[:1000]
+                    self.errors[agent] = runner.activity.operator_text(exc)
+                    if not self.verbose and not runner.live.snapshot:
+                        runner.live.notice(f"Worker failed · {exc}")
                 finally:
                     runner.close()
 
@@ -65,20 +69,32 @@ class Manager:
 
     def stop(self, agent):
         with self.lock:
-            if agent in self.running:
-                self.running[agent][0].stop()
+            worker = self.running.get(agent)
+            if worker and worker[1].is_alive():
+                worker[0].stop()
+                return
+            directory = agent_dir(self.store, agent)
+            live = read_live(directory)
+            if live and live["active"]:
+                (directory / "stop").touch()
 
     def close(self):
-        for r, t in self.running.values():
-            r.stop()
-        for r, t in self.running.values():
-            t.join(timeout=3)
+        with self.lock:
+            workers = [worker for worker in self.running.values() if worker[1].is_alive()]
+        for runner, thread in workers:
+            runner.stop()
+        for runner, thread in workers:
+            thread.join(timeout=3)
+            if thread.is_alive():
+                console_line(
+                    f"{runner.live.agent} · Still stopping after browser shutdown grace period"
+                )
 
 
-def create_app(store: ConfigStore, port=8765, ui_settings=None):
+def create_app(store: ConfigStore, port=8765, ui_settings=None, *, verbose=True):
     from contextlib import asynccontextmanager
 
-    manager = Manager(store)
+    manager = Manager(store, verbose=verbose)
 
     @asynccontextmanager
     async def lifespan(app):
@@ -331,25 +347,30 @@ def create_app(store: ConfigStore, port=8765, ui_settings=None):
 
     @app.post("/api/stop")
     def stop(data: dict):
-        manager.stop(data["agent"])
+        agent = data["agent"]
+        if agent not in store.load()["agents"]:
+            raise ValueError("Unknown agent")
+        manager.stop(agent)
         return {"ok": True}
 
     @app.get("/api/status")
     def status():
         result = []
         for name in store.load()["agents"]:
-            journal = Journal(agent_dir(store, name) / "journal.sqlite3")
+            directory = agent_dir(store, name)
+            live = read_live(directory)
+            journal = Journal(directory / "journal.sqlite3")
             try:
                 result.append(
                     {
                         "agent": name,
-                        "active": name in manager.running
-                        and manager.running[name][1].is_alive(),
+                        "active": bool(live and live["active"]),
                         "error": manager.errors.get(name),
-                        "listener_status": getattr(manager.running[name][0], 'listener_status', None)
-                            if name in manager.running else None,
+                        "listener_status": live.get("listener_status") if live else None,
+                        "live": live,
+                        "last_run": journal.completed_status(),
                         "runs": journal.status(),
-                        "log_path": str(agent_dir(store, name) / "activity.log"),
+                        "log_path": str(directory / "activity.log"),
                     }
                 )
             finally:

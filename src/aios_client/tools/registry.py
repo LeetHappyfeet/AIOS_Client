@@ -9,6 +9,8 @@ from typing import get_type_hints
 
 from pydantic import ConfigDict, ValidationError, create_model
 
+from .notebook import TOOL_CAPABILITY as NOTEBOOK_TOOLS
+
 
 class ToolArguments(ValueError):
     pass
@@ -44,6 +46,8 @@ class Registry:
         self.tool_mode = "workspace"  # research mode is separate from inspection
 
     def permitted(self, tool):
+        if tool.capability == NOTEBOOK_TOOLS:
+            return tool.effect == "read" or not self.read_only
         if self.tool_mode == "research":
             return tool.capability == "research.read" or tool.name in {
                 "publish_result", "update_plan", "task_blocked", "aios_recall",

@@ -91,7 +91,7 @@ def test_manager_runs_two_profiles_and_reuses_endpoint_gate(tmp_path, monkeypatc
     store = ConfigStore(tmp_path / 'config.json')
     store.save(data)
     class FakeRunner:
-        def __init__(self, store, agent, gates):
+        def __init__(self, store, agent, gates, *, verbose=True):
             self.gate = gates['model']
             self.stopped = threading.Event()
         def work(self, *args, **kwargs):

@@ -12,7 +12,7 @@ from pydantic import ValidationError
 from .tools.results import MemoryCandidate
 from .verification import bounded_text
 
-REPORT = re.compile(r"aios-experiment-[0-9a-fA-F-]{36}\.json\Z")
+REPORT = re.compile(r"aios-(?:work-report|experiment)-[0-9a-fA-F-]{36}\.json\Z")
 
 
 def _object(text):
@@ -87,15 +87,26 @@ def stage_memory(workspace, result, report, *, nominated):
 
 
 def result_summary(workspace, spec, report, *, execution_failed=False):
-    """Prefer a structured final answer; bridge existing experimental JSON reports.
+    """Prefer a structured final answer; bridge workspace JSON reports.
 
-    Only explicitly expected experimental reports are opened. Report files must
+    Only explicitly expected work reports are opened. Report files must
     match the immutable-check snapshot; their statements remain worker claims.
     Never follow artifact paths supplied by the model to collect more files.
     """
+    research_mode = getattr(workspace.registry, "tool_mode", None) == "research"
     selected = getattr(workspace, "published_result", None)
-    value = dict(selected) if selected is not None else _object(report)
+    final = _object(report)
+    value = dict(selected) if selected is not None else final
     source = "publish_result" if selected is not None else "final_response"
+    if selected is not None and research_mode and final is not None:
+        # Research finalization has already applied the host's coverage checks.
+        # Keep the staged findings and their indexed citations together.
+        value["outcome"] = final["outcome"]
+        final_limitations = final["limitations"]
+        value["limitations"] = [
+            *final_limitations,
+            *(item for item in selected["limitations"] if item not in final_limitations),
+        ]
     source_hash = None
     if value is None:
         manifest = workspace.artifacts / "manifest.json"
@@ -198,6 +209,76 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
         "source": source,
         "source_sha256": source_hash,
     }
+    # Retain just enough run-local research observations for a character to
+    # inspect a partial or truncated report without requesting new execution.
+    # These are worker-supplied excerpts, never verified scientific findings.
+    if research_mode:
+        def shallow(value, keys, max_len=240):
+            if not isinstance(value, dict):
+                return {}
+            return {key: text(value[key], max_len) if isinstance(value.get(key), str)
+                    else value[key]
+                    for key in keys if isinstance(value.get(key), (str, int, float, bool))}
+        tools = getattr(workspace, "research_tools", None)
+        progress = tools.control.snapshot() if tools is not None else value.get("research_progress")
+        progress = progress if isinstance(progress, dict) else {}
+        passages = progress.get("verified_passages")
+        if isinstance(passages, list):
+            retained, seen = [], set()
+            for passage in passages:
+                if not isinstance(passage, dict):
+                    continue
+                pair = (passage.get("evidence_id"), passage.get("section"))
+                if not all(isinstance(x, str) for x in pair) or pair in seen:
+                    continue
+                seen.add(pair)
+                item = shallow(passage, ("evidence_id", "source_id", "title",
+                                        "section", "document_sha256", "cursor", "end_cursor"))
+                item["passage_excerpt"] = text(passage.get("passage_excerpt"), 320)
+                if isinstance(passage.get("passage_excerpt_tail"), str):
+                    item["passage_excerpt_tail"] = text(passage["passage_excerpt_tail"], 180)
+                if isinstance(passage.get("web_coverage"), dict):
+                    item["web_coverage"] = shallow(passage["web_coverage"], (
+                        "download_bytes", "searchable_sections", "extracted_characters", "extraction_limited"))
+                retained.append(item)
+            result["research_progress"] = {
+                "searches": progress.get("searches", 0),
+                "passage_scans": progress.get("passage_scans", 0),
+                "acquisitions": progress.get("acquisitions", 0),
+                "passages": progress.get("passages", 0),
+                "failed_acquisitions": progress.get("failed_acquisitions", 0),
+                "verified_passages": retained[-8:],
+            }
+        acquisition_errors = progress.get("acquisition_errors")
+        if isinstance(acquisition_errors, list) and acquisition_errors:
+            result.setdefault("research_progress", {})["acquisition_errors"] = [
+                shallow(item, ("evidence_id", "source_id", "title", "error", "limit_bytes"), 140)
+                for item in acquisition_errors[-8:] if isinstance(item, dict)
+            ]
+        coverage = progress.get("pdf_coverage")
+        if isinstance(coverage, list) and coverage:
+            result.setdefault("research_progress", {})["pdf_coverage"] = [
+                shallow(item, ("evidence_id", "source_id", "title", "document_sha256",
+                               "total_pages", "attempted_pages", "indexed_pages",
+                               "no_text_pages", "failed_pages", "clipped_pages",
+                               "unprocessed_pages", "unprocessed_range"), 120)
+                for item in coverage[-8:] if isinstance(item, dict)
+            ]
+        if isinstance(value.get("evidence"), list):
+            result["evidence"] = [
+                shallow(item, ("evidence_id", "source_id", "title", "author",
+                               "section", "note"), 240)
+                for item in value["evidence"][:8] if isinstance(item, dict)
+            ]
+        search_log = tools.search_audit if tools is not None else value.get("search_log")
+        if isinstance(search_log, list):
+            result["search_log"] = [
+                {**shallow(item, ("query", "source_id", "status", "result_count",
+                                  "search_mode", "query_scope", "full_text_error"), 120),
+                 "errors": {str(k)[:64]: text(v, 80) for k,v in item.get("errors", {}).items()}
+                 if isinstance(item.get("errors"), dict) else {}}
+                for item in search_log[-12:] if isinstance(item, dict)
+            ]
     # Citations are source-retrieval receipts, not proof that claims are true.
     # Never infer citations from worker prose or from arbitrary returned URLs.
     if source == "publish_result":
@@ -225,6 +306,16 @@ def result_summary(workspace, spec, report, *, execution_failed=False):
                 result["content_sections_omitted"] += 1
         elif result["findings"]:
             result["findings"].pop()
+        elif result.get("research_progress", {}).get("verified_passages"):
+            result["research_progress"]["verified_passages"].pop()
+        elif result.get("evidence"):
+            result["evidence"].pop()
+        elif result.get("search_log"):
+            result["search_log"].pop(0)
+        elif result.get("research_progress", {}).get("acquisition_errors"):
+            result["research_progress"]["acquisition_errors"].pop(0)
+        elif result.get("research_progress", {}).get("pdf_coverage"):
+            result["research_progress"]["pdf_coverage"].pop(0)
         else:
             break
     return result

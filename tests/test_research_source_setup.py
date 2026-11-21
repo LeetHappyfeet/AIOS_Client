@@ -76,7 +76,9 @@ def test_source_connection_checks_are_provider_specific():
     def serve(req):
         requests.append(str(req.url))
         if req.url.path == "/search":
-            assert req.url.params["format"] == "json"
+            assert req.method == "POST"
+            assert not req.url.query
+            assert b"format=json" in req.content
             return httpx.Response(200, headers={"content-type": "application/json"},
                                   json={"results": []})
         assert req.url.path == "/opds"
@@ -208,7 +210,7 @@ def test_research_permissions_visible_outside_manual_routing():
 def test_searxng_403_explains_json_format_and_access_policy():
     calls = []
     def reject(request):
-        calls.append(str(request.url))
+        calls.append(request)
         return httpx.Response(403, text="Forbidden")
     result = probe_source(
         {"id": "searx", "adapter": "searxng",
@@ -221,7 +223,7 @@ def test_searxng_403_explains_json_format_and_access_policy():
     assert "settings.yml" in result["hint"]
     assert "search.formats" in result["hint"]
     assert "reverse-proxy" in result["hint"]
-    assert "format=json" in calls[0]
+    assert b"format=json" in calls[0].content
     calibre = probe_source(
         {"id": "calibre", "adapter": "calibre_opds",
          "endpoint": "http://192.168.1.16/"},
